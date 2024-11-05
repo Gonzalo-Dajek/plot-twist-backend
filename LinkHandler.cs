@@ -22,7 +22,7 @@ public class LinkHandler {
     private async void UpdateClientLinks(WebSocketCoordinator wsc) {
         await wsc.BroadcastMessage(new plot_twist_back_end.Message() {
             type = "link",
-            links = this.ListOfLinks(),
+            links = this.ArrayOfLinks(),
         },0);
     }
     
@@ -40,23 +40,29 @@ public class LinkHandler {
 
     public void RemoveLink(Link l, WebSocketCoordinator wsc) 
     {
-        this._stateOfLinks.Remove(l);
-        this.UpdateClientLinks(wsc);
+        if (this._stateOfLinks.ContainsKey(l)) {
+            this._stateOfLinks.Remove(l);
+        }
+        this.UpdateClientLinks(wsc);           
     }
 
     public void Relink(Link l, WebSocketCoordinator wsc) 
     {
-        this._stateOfLinks[l] = (this._stateOfLinks[l].Item1, true);
-        this.UpdateClientLinks(wsc);
+        if (this._stateOfLinks.ContainsKey(l)) {
+            this._stateOfLinks[l] = (this._stateOfLinks[l].Item1, true);
+        }
+        this.UpdateClientLinks(wsc);           
     }
 
     public void Unlink(Link l, WebSocketCoordinator wsc) 
     {
-        this._stateOfLinks[l] = (this._stateOfLinks[l].Item1, false);
+        if (this._stateOfLinks.ContainsKey(l)) {
+            this._stateOfLinks[l] = (this._stateOfLinks[l].Item1, false);
+        }
         this.UpdateClientLinks(wsc);
     }
 
-    public plot_twist_back_end.LinkInfo[] ListOfLinks() {
+    public plot_twist_back_end.LinkInfo[] ArrayOfLinks() {
         var list = new List<plot_twist_back_end.LinkInfo>();
         foreach (var linkTimeState in this._stateOfLinks) {
             Link link = linkTimeState.Key;

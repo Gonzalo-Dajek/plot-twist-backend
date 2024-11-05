@@ -60,6 +60,7 @@ public class plot_twist_back_end
         WebSocketCoordinator wsc = new WebSocketCoordinator();
         LinkHandler lh = new LinkHandler();
         BrushHandler bh = new BrushHandler();
+        MessageQueue mq = new MessageQueue();
 
         // WebSocket request handling
         app.Use(async (context, next) =>
@@ -67,7 +68,7 @@ public class plot_twist_back_end
             if (context.WebSockets.IsWebSocketRequest)
             {
                 var webSocket = await context.WebSockets.AcceptWebSocketAsync();
-                await HandleWebSocketCommunication(context, webSocket, wsc, lh, bh);
+                await HandleWebSocketCommunication(webSocket, wsc, lh, bh, mq);
             }
             else
             {
@@ -76,7 +77,12 @@ public class plot_twist_back_end
         });
     }
     
-    private static async Task HandleWebSocketCommunication(HttpContext context, WebSocket webSocket, WebSocketCoordinator wsc, LinkHandler lh, BrushHandler bh)
+    private static async Task HandleWebSocketCommunication(
+        WebSocket webSocket,
+        WebSocketCoordinator wsc,
+        LinkHandler lh,
+        BrushHandler bh,
+        MessageQueue mq)
     {
         // Add the WebSocket to the manager and get the assigned id
         int socketId = wsc.AddWebSocket(webSocket);
@@ -91,63 +97,9 @@ public class plot_twist_back_end
             Console.WriteLine($"Received from {socketId}:");
             Console.WriteLine(receivedMessage);
 
-            try
-            {
-                var clientMessage = JsonSerializer.Deserialize<Message>(receivedMessage);
-                var serverResponse = new Message();
-                
-                // await Task.Delay(100);
-                switch (clientMessage.type) {
-                    case "link":
-                        LinkInfo linkInfo = clientMessage.links[0];
-                        Link link = new Link() {
-                            DataSet1 = linkInfo.dataSet1,
-                            DataSet2 = linkInfo.dataSet2,
-                            Field1 = linkInfo.field1,
-                            Field2 = linkInfo.field2,
-                        };
-                        switch (clientMessage.links[0].action) {
-                            case "add":
-                                lh.AddLink(link, linkInfo.timeOfCreation, wsc);
-                                bh.updateClients(lh,wsc, 0);
-                                break;
-                            case "delete":
-                                lh.RemoveLink(link, wsc);
-                                bh.updateClients(lh,wsc,0);
-                                break;
-                            case "relink":
-                                lh.Relink(link, wsc);
-                                bh.updateClients(lh,wsc,0);
-                                break;
-                            case "unlink":
-                                lh.Unlink(link, wsc);
-                                bh.updateClients(lh,wsc,0);
-                                break;
-                        }
-                        break;
-                    case "selection":
-                        serverResponse.type = "selection";
-                        serverResponse.range = clientMessage.range;
+            await mq.EnqueueMessageAsync(receivedMessage, socketId, bh, lh, wsc);
+            
 
-                        // if (clientMessage.range.Length >= 3) {
-                        //     var output = lh.Translate(clientMessage.range[0], "athlete_events_500.csv", "athlete_events_1000.csv");
-                        //     var output2 = lh.Translate(clientMessage.range[1], "athlete_events_500.csv", "athlete_events_1000.csv");
-                        //     var output3 = lh.Translate(clientMessage.range[2], "athlete_events_500.csv", "athlete_events_1000.csv");
-                        // }
-                        // await wsc.BroadcastMessage(serverResponse, socketId);
-                        bh.updateSelection(socketId, clientMessage.range, lh, wsc);
-                        break;
-                    case "addClient":
-                        bh.AddClient(socketId, clientMessage.dataSet?.name, clientMessage.dataSet?.fields, wsc, lh);
-                        break;
-                }
-                
-                // await wsc.BroadcastMessage(serverResponse, 0); // TODO: remove
-            }
-            catch (JsonException ex)
-            {
-                Console.WriteLine("Invalid JSON format received");
-            }
 
             result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
         }
@@ -155,10 +107,12 @@ public class plot_twist_back_end
         // Remove the WebSocket from the manager when the connection closes
         await webSocket.CloseAsync(result.CloseStatus.Value, result.CloseStatusDescription, CancellationToken.None);
         wsc.RemoveWebSocket(socketId);
-        // bh.removeClient(); // TODO:
+        bh.removeClient(socketId, lh, wsc); 
         Console.WriteLine($"WebSocket with id {socketId} closed");
     }
-    
+
+
+
     public struct Message
     {
         public string type { get; set; }

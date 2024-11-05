@@ -76,4 +76,30 @@ public class WebSocketCoordinator
             }
         }
     }
+    public async Task SendSelectionPerClient(Dictionary<int, rangeSet> selectionPerDataSet, int socketId) {
+        var options = new JsonSerializerOptions
+        {
+            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+        };       
+        
+        foreach (var socketPair in _webSockets)
+        {
+            var socket = socketPair.Value;
+            var id = socketPair.Key;
+            plot_twist_back_end.RangeSelection[] rangeSelections = selectionPerDataSet[id].ToArr();
+
+            plot_twist_back_end.Message m = new plot_twist_back_end.Message() {
+                type="selection",
+                range=rangeSelections,
+            };
+            
+            var jsonResponse = JsonSerializer.Serialize(m, options);
+            var responseBytes = Encoding.UTF8.GetBytes(jsonResponse);
+            
+            if (socket.State == WebSocketState.Open && id!=socketId)
+            {
+                await socket.SendAsync(new ArraySegment<byte>(responseBytes), WebSocketMessageType.Text, true, CancellationToken.None);
+            }
+        }
+    }
 }
