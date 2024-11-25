@@ -1,125 +1,104 @@
+using System.Reflection.Metadata.Ecma335;
 using System.Runtime.InteropServices.JavaScript;
 
 public struct Link{
-    public string DataSet1 { get; set; }
-    public string Field1 { get; set; }
-    public string DataSet2 { get; set; }
-    public string Field2 { get; set; }
+    public string DataSet { get; set; }
+    public string? Field { get; set; }
+    public string Group { get; set; }
 }
 public class LinkHandler {
-    private Dictionary<Link,(long, bool)> _stateOfLinks = new Dictionary<Link, (long, bool)>();
+    //                Group               DataSet  Field
+    private Dictionary<string, Dictionary<string, string?>> _linkGroups = new Dictionary<string, Dictionary<string, string?>>();
+    private HashSet<string> _dataSets = new HashSet<string>();
 
-    private Link inverse(Link l) {
-        Link linv = new Link() {
-            DataSet1 = l.DataSet2,
-            Field1 = l.Field2,
-            DataSet2 = l.DataSet1,
-            Field2 = l.Field1,
-        };
-        return linv;
-    }
-
-    private async void UpdateClientLinks(WebSocketCoordinator wsc) {
-        await wsc.BroadcastMessage(new plot_twist_back_end.Message() {
-            type = "link",
-            links = this.ArrayOfLinks(),
-        },0);
+    public void AddDataset(string dataSet) {
+        this._dataSets.Add(dataSet);
+        foreach (var (group, DataSetToField) in this._linkGroups) {
+            DataSetToField.TryAdd(dataSet, null);
+        }
     }
     
-    public void AddLink(Link l, long time, WebSocketCoordinator wsc) 
-    {
-        this._stateOfLinks.Remove(this.inverse(l));
-        if (this._stateOfLinks.ContainsKey(l)) {
-            this._stateOfLinks[l] = (time, true);
+    public void CreateLinkGroup(Link l, WebSocketCoordinator wsc) {
+        if (!this._linkGroups.ContainsKey(l.Group)) {
+            this._linkGroups.Add(l.Group,new Dictionary<string, string?>());
+            foreach (var dataSet in this._dataSets) {
+                this._linkGroups[l.Group].Add(dataSet, null);
+            }
         }
-        else {
-            this._stateOfLinks.Add(l,(time, true));
-        }
-        this.UpdateClientLinks(wsc);
     }
 
-    public void RemoveLink(Link l, WebSocketCoordinator wsc) 
+    public void DeleteLinkGroup(Link l, WebSocketCoordinator wsc) 
     {
-        if (this._stateOfLinks.ContainsKey(l)) {
-            this._stateOfLinks.Remove(l);
+        if (this._linkGroups.ContainsKey(l.Group)) {
+            this._linkGroups.Remove(l.Group);
         }
-        this.UpdateClientLinks(wsc);           
     }
 
-    public void Relink(Link l, WebSocketCoordinator wsc) 
-    {
-        if (this._stateOfLinks.ContainsKey(l)) {
-            this._stateOfLinks[l] = (this._stateOfLinks[l].Item1, true);
+    public void UpdateFieldFromGroup(Link l, WebSocketCoordinator wsc) {
+        bool isNotAlreadyInAGroup = true;
+        foreach (var dataSetToField in _linkGroups.Values) {
+            if (dataSetToField.ContainsKey(l.DataSet)) {
+                if (dataSetToField[l.DataSet] == l.Field && l.Field!=null) {
+                    isNotAlreadyInAGroup = false;
+                }
+            }
         }
-        this.UpdateClientLinks(wsc);           
+        if (this._linkGroups.ContainsKey(l.Group) && isNotAlreadyInAGroup) {
+            if (this._linkGroups[l.Group].ContainsKey(l.DataSet)) {
+                this._linkGroups[l.Group][l.DataSet] = l.Field;
+            }
+        }
     }
 
-    public void Unlink(Link l, WebSocketCoordinator wsc) 
-    {
-        if (this._stateOfLinks.ContainsKey(l)) {
-            this._stateOfLinks[l] = (this._stateOfLinks[l].Item1, false);
-        }
-        this.UpdateClientLinks(wsc);
-    }
-
-    public plot_twist_back_end.LinkInfo[] ArrayOfLinks() {
+    public plot_twist_back_end.LinkInfo[] ArrayOfLinks(string dataSet) {
         var list = new List<plot_twist_back_end.LinkInfo>();
-        foreach (var linkTimeState in this._stateOfLinks) {
-            Link link = linkTimeState.Key;
-            long time = linkTimeState.Value.Item1;
-            bool state = linkTimeState.Value.Item2;
+        foreach (var (group, dataSetToField) in this._linkGroups) {
+            string? field = null;
+            if (dataSetToField.TryGetValue(dataSet, out var value)) {
+                field = value;
+            }
             plot_twist_back_end.LinkInfo linkInfo = new plot_twist_back_end.LinkInfo() {
                 action = "none",
-                dataSet1 = link.DataSet1,
-                dataSet2 = link.DataSet2,
-                field1 = link.Field1,
-                field2 = link.Field2,
-                state = state,
-                timeOfCreation = time,
+                group = group,
+                dataSet = dataSet,
+                field = field,
             };
             list.Add(linkInfo);
         }
         return list.ToArray();
     }
 
-    public plot_twist_back_end.RangeSelection[] Translate(plot_twist_back_end.RangeSelection r, String ds1, String ds2) 
+    public plot_twist_back_end.RangeSelection? Translate(plot_twist_back_end.RangeSelection r, String ds1, String ds2) 
     {
         List<plot_twist_back_end.RangeSelection> ret = new List<plot_twist_back_end.RangeSelection>();
         if (ds1==ds2) {
-            ret.Add(r);
+            return r;
         }
-        foreach (var linkTimeState in this._stateOfLinks) 
+        foreach (var (group, dataSetToField) in this._linkGroups) 
         {
-            Link l = linkTimeState.Key;
-            long time = linkTimeState.Value.Item1;
-            bool state = linkTimeState.Value.Item2;
-            bool matchesLink = (l.DataSet1==ds1 && l.DataSet2==ds2 && l.Field1==r.field);
-            bool matchesLinkInv = (l.DataSet2 == ds1 && l.DataSet1 == ds2 && l.Field2==r.field);
-            if ((matchesLink || matchesLinkInv) && state) {
-                plot_twist_back_end.RangeSelection range = new plot_twist_back_end.RangeSelection() {
-                    // field= r.field,
-                    type = r.type,
-                };
-                if (r.type == "numerical") {
-                    range.range = r.range;
-                }
-                else 
-                {
-                    range.categories = r.categories;
-                }
+            // if(matches fields/dataset inside same group) -> return other field
+            bool isNumerical = r.type == "numerical";
+            if (dataSetToField.ContainsKey(ds1) && dataSetToField.ContainsKey(ds2)) {
+                if (dataSetToField[ds1] == r.field && dataSetToField[ds2]!=null) {
+                    if (isNumerical) {
+                        return new plot_twist_back_end.RangeSelection() {
+                            field = dataSetToField[ds2], 
+                            type = r.type, 
+                            range = r.range, 
+                        };                       
+                    }
+                    else {
+                        return new plot_twist_back_end.RangeSelection() {
+                            field = dataSetToField[ds2], 
+                            type = r.type, 
+                            categories = r.categories, 
+                        };                                              
+                    }
 
-                if (matchesLink) {
-                    range.field = l.Field2;
-                }
 
-                if (matchesLinkInv) {
-                    range.field = l.Field1;
                 }
-                ret.Add(range);
             }
-
-
         }
-        return ret.ToArray();
+        return null;
     }
 }

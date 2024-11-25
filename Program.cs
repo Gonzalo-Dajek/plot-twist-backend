@@ -134,15 +134,11 @@ public class plot_twist_back_end
         public string name { get; set; }
         public string[] fields { get; set; }
     }
-    
-    public struct LinkInfo
-    {
-        public string dataSet1 {get; set; }
-        public string field1 { get; set; }
-        public string dataSet2 { get; set; }
-        public string field2 { get; set; }
-        public long timeOfCreation { get; set; }
+
+    public struct LinkInfo {
+        public string group { get; set; }
+        public string? field { get; set; }
         public string action { get; set; }
-        public bool state { get; set; }
+        public string dataSet { get; set; }
     }
 }

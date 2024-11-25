@@ -39,27 +39,25 @@ public class MessageQueue {
             case "link":
                 plot_twist_back_end.LinkInfo linkInfo = clientMessage.links[0];
                 Link link = new Link() {
-                    DataSet1 = linkInfo.dataSet1,
-                    DataSet2 = linkInfo.dataSet2,
-                    Field1 = linkInfo.field1,
-                    Field2 = linkInfo.field2,
+                    Group = linkInfo.group,
+                    Field = linkInfo.field,
+                    DataSet = linkInfo.dataSet,
                 };
                 switch (clientMessage.links[0].action) {
-                    case "add":
-                        lh.AddLink(link, linkInfo.timeOfCreation, wsc);
-                        bh.updateClients(lh,wsc, 0);
+                    case "create":
+                        lh.CreateLinkGroup(link, wsc);
+                        bh.updateClientsLinks(lh, wsc);
+                        bh.updateClientSelections(lh,wsc, 0);
                         break;
                     case "delete":
-                        lh.RemoveLink(link, wsc);
-                        bh.updateClients(lh,wsc,0);
+                        lh.DeleteLinkGroup(link, wsc);
+                        bh.updateClientsLinks(lh, wsc);
+                        bh.updateClientSelections(lh,wsc,0);
                         break;
-                    case "relink":
-                        lh.Relink(link, wsc);
-                        bh.updateClients(lh,wsc,0);
-                        break;
-                    case "unlink":
-                        lh.Unlink(link, wsc);
-                        bh.updateClients(lh,wsc,0);
+                    case "update":
+                        lh.UpdateFieldFromGroup(link, wsc);
+                        bh.updateClientsLinks(lh, wsc);
+                        bh.updateClientSelections(lh,wsc,0);
                         break;
                 }
                 break;
@@ -69,7 +67,9 @@ public class MessageQueue {
                 bh.updateSelection(socketId, clientMessage.range, lh, wsc);
                 break;
             case "addClient":
+                lh.AddDataset(clientMessage.dataSet?.name);
                 bh.AddClient(socketId, clientMessage.dataSet?.name, clientMessage.dataSet?.fields, wsc, lh);
+                bh.updateClientsLinks(lh, wsc);
                 break;
         }
     }

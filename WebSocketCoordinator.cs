@@ -76,7 +76,7 @@ public class WebSocketCoordinator
             }
         }
     }
-    public async Task SendSelectionPerClient(Dictionary<int, rangeSet> selectionPerDataSet, int socketId) {
+    public async Task SendSelectionPerClient(Dictionary<int, rangeSet> selectionPerClient, int socketId) {
         var options = new JsonSerializerOptions
         {
             DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
@@ -86,7 +86,7 @@ public class WebSocketCoordinator
         {
             var socket = socketPair.Value;
             var id = socketPair.Key;
-            plot_twist_back_end.RangeSelection[] rangeSelections = selectionPerDataSet[id].ToArr();
+            plot_twist_back_end.RangeSelection[] rangeSelections = selectionPerClient[id].ToArr();
 
             plot_twist_back_end.Message m = new plot_twist_back_end.Message() {
                 type="selection",
@@ -97,6 +97,32 @@ public class WebSocketCoordinator
             var responseBytes = Encoding.UTF8.GetBytes(jsonResponse);
             
             if (socket.State == WebSocketState.Open && id!=socketId)
+            {
+                await socket.SendAsync(new ArraySegment<byte>(responseBytes), WebSocketMessageType.Text, true, CancellationToken.None);
+            }
+        }
+    }
+
+    public async void UpdateLinksPerClient(Dictionary<int,plot_twist_back_end.LinkInfo[]> linkGroupsPerClient) {
+        var options = new JsonSerializerOptions
+        {
+            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+        };       
+        
+        foreach (var socketPair in _webSockets)
+        {
+            var socket = socketPair.Value;
+            var id = socketPair.Key;
+
+            plot_twist_back_end.Message m = new plot_twist_back_end.Message() {
+                type="link",
+                links = linkGroupsPerClient[id],
+            };
+            
+            var jsonResponse = JsonSerializer.Serialize(m, options);
+            var responseBytes = Encoding.UTF8.GetBytes(jsonResponse);
+            
+            if (socket.State == WebSocketState.Open)
             {
                 await socket.SendAsync(new ArraySegment<byte>(responseBytes), WebSocketMessageType.Text, true, CancellationToken.None);
             }

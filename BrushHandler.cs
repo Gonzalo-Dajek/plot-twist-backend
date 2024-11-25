@@ -4,8 +4,6 @@ public class BrushHandler {
     private Dictionary<string, string[]> _fields = new Dictionary<string, string[]>();
     private Dictionary<int, plot_twist_back_end.RangeSelection[]> _selectionsClients =
         new Dictionary<int, plot_twist_back_end.RangeSelection[]>();
-    // private Dictionary<string, plot_twist_back_end.RangeSelection[]> _selectionsDataSets =
-    //     new Dictionary<string, plot_twist_back_end.RangeSelection[]>();
 
     public async void AddClient(int socketId, string dataSet, string[] fields, WebSocketCoordinator wsc, LinkHandler lh) 
     {
@@ -21,40 +19,40 @@ public class BrushHandler {
             },
         };
         await wsc.BroadcastMessage(m, 0);
-        this.updateClients(lh, wsc, 0);
+        this.updateClientSelections(lh, wsc, 0);
     }
 
     public void removeClient(int socketId, LinkHandler lh, WebSocketCoordinator wsc) {
         this._clients.Remove(socketId);
         this._selectionsClients.Remove(socketId);
-        this.updateClients(lh, wsc, 0);
+        this.updateClientSelections(lh, wsc, 0);
     }
 
     public async void updateSelection(int socketId, plot_twist_back_end.RangeSelection[] socketSelection, LinkHandler lh, WebSocketCoordinator wsc) {
         if (socketId != 0) {
             this._selectionsClients[socketId] = socketSelection;
         }
-        this.updateClients(lh, wsc, 0);
+        this.updateClientSelections(lh, wsc, 0);
     }
 
-    public async void updateClients(LinkHandler lh, WebSocketCoordinator wsc, int socketId) {
-        // Dictionary<string, rangeSet> interesectionSelection = new Dictionary<string, rangeSet>(){};
-        // foreach (var dataSets in this._fields.Keys) {
-        //     interesectionSelection.Add(dataSets, new rangeSet());
-        // }
-        //
-        // foreach (var (id, selection) in this._selectionsClients) {
-        //     string dataSet1 = this._clients[id];
-        //     foreach (var dataSet2 in this._fields.Keys) {
-        //         foreach (var rangeSelection in selection) {
-        //             var selectionWithLinks = lh.Translate(rangeSelection, dataSet1, dataSet2);
-        //             interesectionSelection[dataSet2].AddSelectionArr(selectionWithLinks);
-        //         }
-        //     }
-        // }
+    public async void updateClientsLinks(LinkHandler lh, WebSocketCoordinator wsc) {
+        Dictionary<string, plot_twist_back_end.LinkInfo[]> linkGroupPerDataSet =
+            new Dictionary<string, plot_twist_back_end.LinkInfo[]>();
         
-        // await wsc.SendSelectionPerDataSet(interesectionSelection, this._clients, socketId);       
-        
+        foreach (var (dataset,_) in this._fields) {
+            linkGroupPerDataSet.Add(dataset, lh.ArrayOfLinks(dataset));
+        }
+
+        Dictionary<int, plot_twist_back_end.LinkInfo[]> linkGroupPerClient =
+            new Dictionary<int, plot_twist_back_end.LinkInfo[]>();
+        foreach (var (id, dataset) in this._clients) {
+            linkGroupPerClient.Add(id, linkGroupPerDataSet[dataset]);
+        }
+
+        wsc.UpdateLinksPerClient(linkGroupPerClient);
+    }
+
+    public async void updateClientSelections(LinkHandler lh, WebSocketCoordinator wsc, int socketId) {
         Dictionary<int, rangeSet> interesectionSelection = new Dictionary<int, rangeSet>(){};
         foreach (var id in this._clients.Keys) {
             interesectionSelection.Add(id, new rangeSet());
@@ -68,10 +66,11 @@ public class BrushHandler {
                 if (id != id2) {
                     foreach (var rangeSelection in selection) { 
                         var selectionWithLinks = lh.Translate(rangeSelection, dataSet1, dataSet2);
-                        interesectionSelection[id2].AddSelectionArr(selectionWithLinks);
+                        if (selectionWithLinks != null) {
+                            interesectionSelection[id2].AddSelection(selectionWithLinks.Value);
+                        }
                     }                   
                 }
-
             }
         }
         
