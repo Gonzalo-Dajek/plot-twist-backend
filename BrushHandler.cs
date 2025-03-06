@@ -1,3 +1,5 @@
+// namespace plot_twist_back_end;
+    
 
 public class BrushHandler {
     private Dictionary<int,string> _clients = new Dictionary<int, string>();
@@ -10,15 +12,7 @@ public class BrushHandler {
         this._clients.Add(socketId, dataSet);
         this._fields.TryAdd(dataSet, fields);
         this._selectionsClients.Add(socketId,new plot_twist_back_end.RangeSelection[]{});
-        // this._selectionsDataSets.TryAdd(dataSet, new plot_twist_back_end.RangeSelection[]{});
-        var m = new plot_twist_back_end.Message() {
-            type = "addClient",
-            dataSet = new plot_twist_back_end.DataSetInfo() {
-                name = dataSet,
-                fields = fields,
-            },
-        };
-        await wsc.BroadcastMessage(m, 0);
+
         this.updateClientSelections(lh, wsc, 0);
     }
 

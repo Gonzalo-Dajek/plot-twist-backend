@@ -1,43 +1,41 @@
-
 using System.Collections.Concurrent;
 using System.Text.Json;
+using plot_twist_back_end;
 
 public class MessageQueue {
     private readonly ConcurrentQueue<string> _messageQueue = new();
     private bool _isProcessing = false;
 
-    public async Task EnqueueMessageAsync(string message, int socketId, BrushHandler bh, LinkHandler lh, WebSocketCoordinator wsc)
+    public async Task EnqueueMessageAsync(string message, int socketId, BrushHandler bh, LinkHandler lh, WebSocketCoordinator wsc, BenchmarkHandler benchmarkHandler)
     {
         _messageQueue.Enqueue(message);
         if (!_isProcessing)
         {
-            await StartProcessingQueueAsync(socketId, bh, lh, wsc);
+            await StartProcessingQueueAsync(socketId, bh, lh, wsc, benchmarkHandler);
         }
     }
-
-    private async Task StartProcessingQueueAsync(int socketId, BrushHandler bh, LinkHandler lh, WebSocketCoordinator wsc)
+    private async Task StartProcessingQueueAsync(int socketId, BrushHandler bh, LinkHandler lh, WebSocketCoordinator wsc, BenchmarkHandler benchmarkHandler)
     {
         _isProcessing = true;
         while (_messageQueue.TryDequeue(out var message))
         {
             try {
-                // await Task.Delay(100);
                 var clientMessage = JsonSerializer.Deserialize<plot_twist_back_end.Message>(message);
-                handleClientMessage(socketId, clientMessage, bh, lh, wsc);
+                HandleClientMessage(socketId, clientMessage, bh, lh, wsc, benchmarkHandler);
             }
             catch (JsonException ex)
             {
-                Console.WriteLine("Invalid JSON format received");
+                Console.WriteLine($"Invalid JSON format received: {ex.Message}");
             }
         }
         _isProcessing = false;
     } 
-    private static void handleClientMessage(int socketId, plot_twist_back_end.Message clientMessage, BrushHandler bh, LinkHandler lh, WebSocketCoordinator wsc) {
+    private static void HandleClientMessage(int socketId, Message clientMessage, BrushHandler bh, LinkHandler lh, WebSocketCoordinator wsc, BenchmarkHandler benchmarkHandler) {
         
-        var serverResponse = new plot_twist_back_end.Message();
+        var serverResponse = new Message();
         switch (clientMessage.type) {
             case "link":
-                plot_twist_back_end.LinkInfo linkInfo = clientMessage.links[0];
+                LinkInfo linkInfo = clientMessage.links[0];
                 Link link = new Link() {
                     Group = linkInfo.group,
                     Field = linkInfo.field,
@@ -45,21 +43,17 @@ public class MessageQueue {
                 };
                 switch (clientMessage.links[0].action) {
                     case "create":
-                        lh.CreateLinkGroup(link, wsc);
-                        bh.updateClientsLinks(lh, wsc);
-                        bh.updateClientSelections(lh,wsc, 0);
+                        lh.CreateLinkGroup(link);
                         break;
                     case "delete":
-                        lh.DeleteLinkGroup(link, wsc);
-                        bh.updateClientsLinks(lh, wsc);
-                        bh.updateClientSelections(lh,wsc,0);
+                        lh.DeleteLinkGroup(link);
                         break;
                     case "update":
-                        lh.UpdateFieldFromGroup(link, wsc);
-                        bh.updateClientsLinks(lh, wsc);
-                        bh.updateClientSelections(lh,wsc,0);
+                        lh.UpdateFieldFromGroup(link);
                         break;
                 }
+                bh.updateClientsLinks(lh, wsc);
+                bh.updateClientSelections(lh,wsc,0);
                 break;
             case "selection":
                 serverResponse.type = "selection";
@@ -67,9 +61,54 @@ public class MessageQueue {
                 bh.updateSelection(socketId, clientMessage.range, lh, wsc);
                 break;
             case "addClient":
+                wsc.InitializeClient(socketId);
                 lh.AddDataset(clientMessage.dataSet?.name);
                 bh.AddClient(socketId, clientMessage.dataSet?.name, clientMessage.dataSet?.fields, wsc, lh);
                 bh.updateClientsLinks(lh, wsc);
+                break;
+            case "BenchMark":
+                serverResponse.type = "BenchMark";
+                switch (clientMessage.benchMark?.action) {
+                    case "addClientBenchMark":
+                        var clientInfo = clientMessage.benchMark?.clientInfo ?? throw new InvalidOperationException("clientInfo should not be null");
+                        int id = clientMessage.benchMark?.clientId ?? throw new InvalidOperationException("clientId should not be null");
+
+                        benchmarkHandler.AddClient(id, clientInfo);
+                        break;
+                    case "start":
+                        serverResponse.benchMark = new BenchMark() {
+                            action = "start",
+                        };
+                        _ = wsc.BroadcastMessage(clientMessage, 0);
+                        break;
+
+                    case "brush": {
+                        var clientId = clientMessage.benchMark?.clientId ?? -1;
+                        var timeToProcessBrushLocally = clientMessage.benchMark?.timeToProcessBrushLocally ?? -1;
+                        var timeToUpdatePlots = clientMessage.benchMark?.timeToUpdatePlots ?? -1;
+                        var pre = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                        var ping = pre - (clientMessage.benchMark?.timeSent ?? -1);
+                        bh.updateSelection(socketId, clientMessage.benchMark?.range, lh, wsc);
+                        var timeToProcess = (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()) - pre;
+                        benchmarkHandler.StoreSentBrushTimings(clientId, timeToProcessBrushLocally, timeToUpdatePlots, ping, timeToProcess);
+                        }
+                        break;
+
+                    case "receivedBrush": {
+                        var clientId = clientMessage.benchMark?.clientId ?? -1;
+                        var timeToProcessBrushLocally = clientMessage.benchMark?.timeToProcessBrushLocally ?? -1;
+                        var timeToUpdatePlots = clientMessage.benchMark?.timeToUpdatePlots ?? -1;
+                        var post = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                        var ping = post - (clientMessage.benchMark?.timeReceived ?? -1);
+                        benchmarkHandler.StoreReceivedBrushTimings(clientId, timeToProcessBrushLocally, timeToUpdatePlots, ping);
+                        }
+
+                        break;
+                    
+                    case "end":
+                        benchmarkHandler.DownloadData();
+                        break;
+                }
                 break;
         }
     }

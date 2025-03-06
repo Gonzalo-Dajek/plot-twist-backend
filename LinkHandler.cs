@@ -3,9 +3,10 @@ using System.Runtime.InteropServices.JavaScript;
 
 public struct Link{
     public string DataSet { get; set; }
-    public string? Field { get; set; }
     public string Group { get; set; }
+    public string? Field { get; set; }
 }
+
 public class LinkHandler {
     //                Group               DataSet  Field
     private Dictionary<string, Dictionary<string, string?>> _linkGroups = new Dictionary<string, Dictionary<string, string?>>();
@@ -18,7 +19,7 @@ public class LinkHandler {
         }
     }
     
-    public void CreateLinkGroup(Link l, WebSocketCoordinator wsc) {
+    public void CreateLinkGroup(Link l) {
         if (!this._linkGroups.ContainsKey(l.Group)) {
             this._linkGroups.Add(l.Group,new Dictionary<string, string?>());
             foreach (var dataSet in this._dataSets) {
@@ -27,14 +28,14 @@ public class LinkHandler {
         }
     }
 
-    public void DeleteLinkGroup(Link l, WebSocketCoordinator wsc) 
+    public void DeleteLinkGroup(Link l) 
     {
         if (this._linkGroups.ContainsKey(l.Group)) {
             this._linkGroups.Remove(l.Group);
         }
     }
 
-    public void UpdateFieldFromGroup(Link l, WebSocketCoordinator wsc) {
+    public void UpdateFieldFromGroup(Link l) {
         bool isNotAlreadyInAGroup = true;
         foreach (var dataSetToField in _linkGroups.Values) {
             if (dataSetToField.ContainsKey(l.DataSet)) {
@@ -94,8 +95,6 @@ public class LinkHandler {
                             categories = r.categories, 
                         };                                              
                     }
-
-
                 }
             }
         }

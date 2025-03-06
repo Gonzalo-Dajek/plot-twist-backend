@@ -1,4 +1,5 @@
- 
+benchMark/
+
 # Build artifacts
 bin/
 obj/
