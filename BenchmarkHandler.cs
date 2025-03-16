@@ -1,14 +1,15 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using plot_twist_back_end;
 
 public class BenchmarkHandler
 {
     private class BenchmarkEntry
     {
-        public double TimeToProcessBrushLocally { get; set; }
-        public double TimeToUpdatePlots { get; set; }
-        public double Ping { get; set; }
-        public double TimeToProcess { get; set; } // Only for SentBrushTimings
+        public double? TimeToProcessBrushLocally { get; set; }
+        public double? TimeToUpdatePlots { get; set; }
+        public double? Ping { get; set; }
+        public double? TimeToProcess { get; set; } // Only for SentBrushTimings
         public long Time { get; set; }
     }
 
@@ -37,7 +38,7 @@ public class BenchmarkHandler
 
             if (!configToCompare.Equals(refConfig))
             {
-                throw new InvalidOperationException("All clients must have the same BenchmarkConfig (except clientId and dataSetNum)." );
+                throw new InvalidOperationException("All clients must have the same BenchmarkConfig (except clientId and dataSetNum).");
             }
         }
         else
@@ -50,7 +51,7 @@ public class BenchmarkHandler
         _receivedBrushTimings[clientId] = new ClientBenchmark { ClientId = clientId, Config = config };
     }
 
-    public void StoreSentBrushTimings(int clientId, double timeToProcessBrushLocally, double timeToUpdatePlots, double ping, double timeToProcess)
+    public void StoreSentBrushTimings(int clientId, double? timeToProcessBrushLocally, double? timeToUpdatePlots, double? ping, double? timeToProcess)
     {
         _sentBrushTimings[clientId].BenchMarkData.Add(new BenchmarkEntry
         {
@@ -62,7 +63,7 @@ public class BenchmarkHandler
         });
     }
 
-    public void StoreReceivedBrushTimings(int clientId, double timeToProcessBrushLocally, double timeToUpdatePlots, double ping)
+    public void StoreReceivedBrushTimings(int clientId, double? timeToProcessBrushLocally, double? timeToUpdatePlots, double? ping)
     {
         _receivedBrushTimings[clientId].BenchMarkData.Add(new BenchmarkEntry
         {
@@ -73,14 +74,33 @@ public class BenchmarkHandler
         });
     }
 
+    public void StorePing(int clientId, long pingMs, int isSent)
+    {
+        var isSentBool = isSent == 1;
+    
+        if ((isSentBool && _sentBrushTimings.ContainsKey(clientId)) || 
+            (!isSentBool && _receivedBrushTimings.ContainsKey(clientId)))
+        {
+            var entry = new BenchmarkEntry
+            {
+                Ping = pingMs,
+                Time = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+            };
+
+            var targetList = isSentBool ? _sentBrushTimings[clientId].BenchMarkData : _receivedBrushTimings[clientId].BenchMarkData;
+            targetList.Add(entry);
+        }
+    }
+
+
     public void DownloadData()
     {
         var config = _referenceConfig!.Value;
         string directoryPath = "benchMark";
-        Directory.CreateDirectory(directoryPath); // Ensure the directory exists
+        Directory.CreateDirectory(directoryPath);
 
-        string fileName = Path.Combine(directoryPath, 
-            $"benchmark_{config.typeOfData}_{config.plotsAmount}_{config.columnsAmount}_{config.catColumnsAmount}_{config.entriesAmount}_{config.dimensionsSelected}_{config.catDimensionsSelected}_{config.fieldGroupsAmount}_{config.brushSize}_{config.stepSize}_{config.numberOfClientBrushing}_{config.numberOfDataSets}_{config.testDuration}.json");
+        string fileName = Path.Combine(directoryPath,
+            $"benchmark_dataType:{config.dataDistribution}_plotsAmt:{config.plotsAmount}_numColumnsAmt:{config.columnsAmount}_catColumnsAmt:{config.catColumnsAmount}_rows:{config.entriesAmount}_brushedNumDims:{config.dimensionsSelected}_catDimsSelected:{config.catDimensionsSelected}_numLinks:{config.fieldGroupsAmount}_brushSize:{config.brushSize}_brushSpeed:{config.stepSize}_numOfClientsBrushing:{config.numberOfClientBrushing}_dataSetsAmt:{config.numberOfDataSets}_testDuration:{config.testDuration}.json");
 
         var data = new
         {
@@ -88,8 +108,21 @@ public class BenchmarkHandler
             ReceivedBrushTimingsPerClient = _receivedBrushTimings.Values
         };
 
-        string json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true });
+        var jsonOptions = new JsonSerializerOptions
+        {
+            WriteIndented = true,
+            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+        };
+
+        string json = JsonSerializer.Serialize(data, jsonOptions);
         File.WriteAllText(fileName, json);
         Console.WriteLine($"Benchmark data saved to {fileName}");
+    }
+
+    public void Reset()
+    {
+        _sentBrushTimings.Clear();
+        _receivedBrushTimings.Clear();
+        _referenceConfig = null;
     }
 }

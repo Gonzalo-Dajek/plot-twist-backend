@@ -12,12 +12,13 @@ public struct BenchMark {
     public string action { get; set; }
     public double timeToProcessBrushLocally { get; set; }
     public double timeToUpdatePlots { get; set; }
-    public double timeSent { get; set; }
+    public long timeSent { get; set; }
     public RangeSelection[]? range { get; set; }
     public double timeReceived { get; set; }
     public int clientId { get; set; }
+    public int pingType { get; set; }
     public BenchmarkConfig? clientInfo { get; set; }
-    
+
 }
 public struct RangeSelection
 {
@@ -42,7 +43,7 @@ public struct LinkInfo {
 
 public struct BenchmarkConfig
 {
-    public string typeOfData { get; set; }
+    public string dataDistribution { get; set; }
     public int plotsAmount { get; set; }
     public int columnsAmount { get; set; }
     public int catColumnsAmount { get; set; }

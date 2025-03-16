@@ -51,6 +51,22 @@ public class WebSocketCoordinator
             }
         }
     }
+    
+    public async Task SendMessageToClient(plot_twist_back_end.Message message, int socketId)
+    {
+        if (_webSockets.TryGetValue(socketId, out var socket) && socket.State == WebSocketState.Open)
+        {
+            var options = new JsonSerializerOptions
+            {
+                DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+            };
+            var jsonResponse = JsonSerializer.Serialize(message, options);
+            var responseBytes = Encoding.UTF8.GetBytes(jsonResponse);
+
+            await socket.SendAsync(new ArraySegment<byte>(responseBytes), WebSocketMessageType.Text, true, CancellationToken.None);
+        }
+    }
+
     //
     // public async Task SendSelectionPerDataSet(Dictionary<string, rangeSet> selectionPerDataSet, Dictionary<int, string> dataSetPerClient, int socketId) {
     //     var options = new JsonSerializerOptions

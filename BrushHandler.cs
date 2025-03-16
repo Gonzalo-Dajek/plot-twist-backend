@@ -12,8 +12,6 @@ public class BrushHandler {
         this._clients.Add(socketId, dataSet);
         this._fields.TryAdd(dataSet, fields);
         this._selectionsClients.Add(socketId,new plot_twist_back_end.RangeSelection[]{});
-
-        this.updateClientSelections(lh, wsc, 0);
     }
 
     public void removeClient(int socketId, LinkHandler lh, WebSocketCoordinator wsc) {
@@ -69,5 +67,11 @@ public class BrushHandler {
         }
         
         await wsc.SendSelectionPerClient(interesectionSelection, socketId);       
+    }
+
+    public void removeAllClients() {
+        this._clients.Clear();
+        this._fields.Clear();
+        this._selectionsClients.Clear();
     }
 }

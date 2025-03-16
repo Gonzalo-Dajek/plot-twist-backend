@@ -64,6 +64,7 @@ public class MessageQueue {
                 wsc.InitializeClient(socketId);
                 lh.AddDataset(clientMessage.dataSet?.name);
                 bh.AddClient(socketId, clientMessage.dataSet?.name, clientMessage.dataSet?.fields, wsc, lh);
+                bh.updateClientSelections(lh, wsc, 0);
                 bh.updateClientsLinks(lh, wsc);
                 break;
             case "BenchMark":
@@ -72,17 +73,22 @@ public class MessageQueue {
                     case "addClientBenchMark":
                         var clientInfo = clientMessage.benchMark?.clientInfo ?? throw new InvalidOperationException("clientInfo should not be null");
                         int id = clientMessage.benchMark?.clientId ?? throw new InvalidOperationException("clientId should not be null");
-
                         benchmarkHandler.AddClient(id, clientInfo);
+                        
+                        wsc.InitializeClient(socketId);
+                        lh.AddDataset(clientMessage.dataSet?.name);
+                        bh.AddClient(socketId, clientMessage.dataSet?.name, clientMessage.dataSet?.fields, wsc, lh);
                         break;
                     case "start":
                         serverResponse.benchMark = new BenchMark() {
                             action = "start",
                         };
-                        _ = wsc.BroadcastMessage(clientMessage, 0);
+                        bh.updateClientsLinks(lh, wsc);
+                        _ = wsc.BroadcastMessage(serverResponse, 0);
                         break;
 
                     case "brush": {
+                        // Console.WriteLine($"Brush made: {JsonSerializer.Serialize(clientMessage.benchMark)}");
                         var clientId = clientMessage.benchMark?.clientId ?? -1;
                         var timeToProcessBrushLocally = clientMessage.benchMark?.timeToProcessBrushLocally ?? -1;
                         var timeToUpdatePlots = clientMessage.benchMark?.timeToUpdatePlots ?? -1;
@@ -90,7 +96,16 @@ public class MessageQueue {
                         var ping = pre - (clientMessage.benchMark?.timeSent ?? -1);
                         bh.updateSelection(socketId, clientMessage.benchMark?.range, lh, wsc);
                         var timeToProcess = (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()) - pre;
+                        // Console.WriteLine($"BrushMade time Sent: {clientMessage.benchMark?.timeSent}");
+                        
                         benchmarkHandler.StoreSentBrushTimings(clientId, timeToProcessBrushLocally, timeToUpdatePlots, ping, timeToProcess);
+
+                        serverResponse.type = "ping";
+                        serverResponse.benchMark = new BenchMark() {
+                            timeSent = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                            pingType = 1,
+                        };
+                        _ = wsc.SendMessageToClient(serverResponse, socketId);
                         }
                         break;
 
@@ -101,12 +116,34 @@ public class MessageQueue {
                         var post = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                         var ping = post - (clientMessage.benchMark?.timeReceived ?? -1);
                         benchmarkHandler.StoreReceivedBrushTimings(clientId, timeToProcessBrushLocally, timeToUpdatePlots, ping);
-                        }
+                        
+                        serverResponse.type = "ping";
+                        serverResponse.benchMark = new BenchMark() {
+                            timeSent = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                            pingType = 0,
+                        };
+                        _ = wsc.SendMessageToClient(serverResponse, socketId);
+                    }
 
                         break;
-                    
+                    case "ping": {
+                        // Console.WriteLine("PING");
+                        // Console.WriteLine($"Brush received: {JsonSerializer.Serialize(clientMessage.benchMark)}");
+
+                        var clientId = clientMessage.benchMark?.clientId ?? throw new Exception("Null");
+                        var ping = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - (clientMessage.benchMark?.timeSent ?? throw new Exception("Null")); 
+                        var pingType = clientMessage.benchMark?.pingType ?? throw new Exception("Null");
+                        benchmarkHandler.StorePing(clientId, ping, pingType);
+                    }
+                        break;
                     case "end":
                         benchmarkHandler.DownloadData();
+                        benchmarkHandler.Reset();
+                        serverResponse.benchMark = new BenchMark() {
+                            action = "end",
+                        };
+                        _ = wsc.BroadcastMessage(serverResponse, 0);
+                        bh.removeAllClients();
                         break;
                 }
                 break;
