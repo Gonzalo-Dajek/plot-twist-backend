@@ -6,14 +6,18 @@ public static class PlotTwistBackEnd
 {
     public static void Main(string[] args) {
         var builder = WebApplication.CreateBuilder(args);
-        var services = builder.Services;
+        builder.WebHost.ConfigureKestrel(options =>
+        {
+            options.Listen(System.Net.IPAddress.Any, 5226);
+        });
 
         // Enable CORS
+        var services = builder.Services;
         services.AddCors(options =>
         {
             options.AddPolicy("AllowLocalhost", policyBuilder =>
             {
-                policyBuilder.WithOrigins("http://localhost:5173") // Allow requests from frontend
+                policyBuilder.AllowAnyOrigin() // Allow requests from a frontend served anywhere
                     .AllowAnyHeader()
                     .AllowAnyMethod();
             });

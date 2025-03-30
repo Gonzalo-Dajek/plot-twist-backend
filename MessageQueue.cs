@@ -97,7 +97,7 @@ public class MessageQueue {
                         bh.updateSelection(socketId, clientMessage.benchMark?.range, lh, wsc);
                         var timeToProcess = (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()) - pre;
                         // Console.WriteLine($"BrushMade time Sent: {clientMessage.benchMark?.timeSent}");
-                        
+                         
                         benchmarkHandler.StoreSentBrushTimings(clientId, timeToProcessBrushLocally, timeToUpdatePlots, ping, timeToProcess);
 
                         serverResponse.type = "ping";
