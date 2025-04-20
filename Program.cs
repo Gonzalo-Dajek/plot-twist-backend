@@ -73,13 +73,23 @@ public static class PlotTwistBackEnd
 
         while (!result.CloseStatus.HasValue)
         {
-            var receivedMessage = Encoding.UTF8.GetString(buffer, 0, result.Count);
-            // Console.WriteLine($"Received from {socketId}:");
-            // Console.WriteLine(receivedMessage);
+            int currentQueueLength = mq.GetQueueLength();
+            int maxQueueSize = mq.GetMaxQueueSize();
+            if (currentQueueLength <= maxQueueSize)
+            {
+                var receivedMessage = Encoding.UTF8.GetString(buffer, 0, result.Count);
+                // Console.WriteLine($"Received from {socketId}:");
+                // Console.WriteLine(receivedMessage);
 
-            await mq.EnqueueMessageAsync(receivedMessage, socketId, bh, lh, wsc, benchmarkHandler);
             
-            result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+                await mq.EnqueueMessage(receivedMessage, socketId, bh, lh, wsc, benchmarkHandler);
+            
+                result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+            }
+            else
+            {
+                Console.WriteLine("Discarded message");
+            }
         }
 
         // Remove the WebSocket from the manager when the connection closes

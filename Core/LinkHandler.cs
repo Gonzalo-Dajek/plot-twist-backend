@@ -1,5 +1,6 @@
 using System.Reflection.Metadata.Ecma335;
 using System.Runtime.InteropServices.JavaScript;
+using plot_twist_back_end.Messages;
 
 public struct Link{
     public string DataSet { get; set; }
@@ -51,14 +52,14 @@ public class LinkHandler {
         }
     }
 
-    public plot_twist_back_end.LinkInfo[] ArrayOfLinks(string dataSet) {
-        var list = new List<plot_twist_back_end.LinkInfo>();
+    public LinkInfo[] ArrayOfLinks(string dataSet) {
+        var list = new List<LinkInfo>();
         foreach (var (group, dataSetToField) in this._linkGroups) {
             string? field = null;
             if (dataSetToField.TryGetValue(dataSet, out var value)) {
                 field = value;
             }
-            plot_twist_back_end.LinkInfo linkInfo = new plot_twist_back_end.LinkInfo() {
+            LinkInfo linkInfo = new LinkInfo() {
                 action = "none",
                 group = group,
                 dataSet = dataSet,
@@ -69,9 +70,9 @@ public class LinkHandler {
         return list.ToArray();
     }
 
-    public plot_twist_back_end.RangeSelection? Translate(plot_twist_back_end.RangeSelection r, String ds1, String ds2) 
+    public RangeSelection? Translate(RangeSelection r, String ds1, String ds2) 
     {
-        List<plot_twist_back_end.RangeSelection> ret = new List<plot_twist_back_end.RangeSelection>();
+        List<RangeSelection> ret = new List<RangeSelection>();
         if (ds1==ds2) {
             return r;
         }
@@ -82,14 +83,14 @@ public class LinkHandler {
             if (dataSetToField.ContainsKey(ds1) && dataSetToField.ContainsKey(ds2)) {
                 if (dataSetToField[ds1] == r.field && dataSetToField[ds2]!=null) {
                     if (isNumerical) {
-                        return new plot_twist_back_end.RangeSelection() {
+                        return new RangeSelection() {
                             field = dataSetToField[ds2], 
                             type = r.type, 
                             range = r.range, 
                         };                       
                     }
                     else {
-                        return new plot_twist_back_end.RangeSelection() {
+                        return new RangeSelection() {
                             field = dataSetToField[ds2], 
                             type = r.type, 
                             categories = r.categories, 

@@ -1,14 +1,16 @@
 
-public class rangeSet {
-    private List<plot_twist_back_end.RangeSelection> _selectionArr = new List<plot_twist_back_end.RangeSelection>() { };
+using plot_twist_back_end.Messages;
 
-    public void AddSelectionArr(plot_twist_back_end.RangeSelection[] selectionArr) {
+public class rangeSet {
+    private List<RangeSelection> _selectionArr = new List<RangeSelection>() { };
+
+    public void AddSelectionArr(RangeSelection[] selectionArr) {
         for (int i = 0; i < selectionArr.Length; i++) {
             this.AddSelection(selectionArr[i]);
         }
     }
     
-    public void AddSelection(plot_twist_back_end.RangeSelection selectionRange) {
+    public void AddSelection(RangeSelection selectionRange) {
         bool alreadyIsInArr = false;
         for (int i = 0; i < this._selectionArr.Count; i++) {
             if (this._selectionArr[i].field==selectionRange.field) {
@@ -38,7 +40,7 @@ public class rangeSet {
         }
     }
 
-    public plot_twist_back_end.RangeSelection[] ToArr() {
+    public RangeSelection[] ToArr() {
         return this._selectionArr.ToArray();
     }
 }

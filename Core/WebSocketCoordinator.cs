@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json; 
 using System.Collections.Concurrent;
 using System.Net.WebSockets;
+using plot_twist_back_end.Messages;
 
 public class WebSocketCoordinator
 {
@@ -29,7 +30,7 @@ public class WebSocketCoordinator
         _isInitilized.Remove(id, out _);
     }
 
-    public async Task BroadcastMessage(plot_twist_back_end.Message message, int socketId)
+    public async Task BroadcastMessage(Message message, int socketId)
     {
         var options = new JsonSerializerOptions
         {
@@ -52,7 +53,7 @@ public class WebSocketCoordinator
         }
     }
     
-    public async Task SendMessageToClient(plot_twist_back_end.Message message, int socketId)
+    public async Task SendMessageToClient(Message message, int socketId)
     {
         if (_webSockets.TryGetValue(socketId, out var socket) && socket.State == WebSocketState.Open)
         {
@@ -106,9 +107,9 @@ public class WebSocketCoordinator
             var socket = socketPair.Value;
             var id = socketPair.Key;
             if (HasBeenInitialized(id)) {
-                plot_twist_back_end.RangeSelection[] rangeSelections = selectionPerClient[id].ToArr();
+                RangeSelection[] rangeSelections = selectionPerClient[id].ToArr();
 
-                plot_twist_back_end.Message m = new plot_twist_back_end.Message() {
+                Message m = new Message() {
                     type="selection",
                     range=rangeSelections,
                 };
@@ -124,7 +125,7 @@ public class WebSocketCoordinator
         }
     }
 
-    public async void UpdateLinksPerClient(Dictionary<int,plot_twist_back_end.LinkInfo[]> linkGroupsPerClient) {
+    public async void UpdateLinksPerClient(Dictionary<int,LinkInfo[]> linkGroupsPerClient) {
         var options = new JsonSerializerOptions
         {
             DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
@@ -136,7 +137,7 @@ public class WebSocketCoordinator
             var id = socketPair.Key;
 
             if (HasBeenInitialized(id)) {
-                plot_twist_back_end.Message m = new plot_twist_back_end.Message() {
+                Message m = new Message() {
                     type = "link",
                     links = linkGroupsPerClient[id],
                 };
