@@ -39,7 +39,7 @@ public class BrushHandler {
         if (socketId != 0) {
             this._selectionsClients[socketId] = socketSelection;
         }
-        this.updateClientSelections(lh, wsc, 0);
+        this.updateClientSelections(lh, wsc, socketId); // TODO: this.updateClientSelections(lh, wsc, 0);
     }
 
     public async void updateClientsLinks(LinkHandler lh, WebSocketCoordinator wsc) {

@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Text.Json;
-using plot_twist_back_end;
 using plot_twist_back_end.Messages;
 
 public class MessageQueue {
@@ -129,20 +129,23 @@ public class MessageQueue {
                     var clientId = clientMessage.benchMark?.clientId ?? -1;
                     var timeToProcessBrushLocally = clientMessage.benchMark?.timeToProcessBrushLocally ?? -1;
                     var timeToUpdatePlots = clientMessage.benchMark?.timeToUpdatePlots ?? -1;
-                    var pre = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                    var ping = pre - (clientMessage.benchMark?.timeSent ?? -1);
+                    var stopwatch = Stopwatch.StartNew();
+                    
                     bh.updateSelection(socketId, clientMessage.benchMark?.range, lh, wsc);
-                    var timeToProcess = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - pre;
-
-                    benchmarkHandler.StoreSentBrushTimings(clientId, timeToProcessBrushLocally, timeToUpdatePlots, ping, timeToProcess);
-
-                    serverResponse.type = "ping";
-                    serverResponse.benchMark = new BenchMark()
-                    {
-                        timeSent = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                        pingType = 1,
-                    };
-                    _ = wsc.SendMessageToClient(serverResponse, socketId);
+                    
+                    stopwatch.Stop();
+                    var timeToProcess = stopwatch.Elapsed.TotalMilliseconds;
+                    
+                    benchmarkHandler.StoreSentBrushTimings(clientId, timeToProcessBrushLocally, timeToUpdatePlots, timeToProcess); 
+                    
+                    // serverResponse.type = "ping";
+                    // serverResponse.benchMark = new BenchMark()
+                    // {
+                    //     timeSent = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    //     pingType = 1,
+                    // };
+                    // // _ = wsc.SendMessageToClient(serverResponse, socketId);
+                    // _ = wsc.BroadcastMessage(serverResponse, 0);
                 }
                 break;
 
@@ -153,29 +156,41 @@ public class MessageQueue {
                     var timeToUpdatePlots = clientMessage.benchMark?.timeToUpdatePlots ?? -1;
                     var post = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                     var ping = post - (clientMessage.benchMark?.timeReceived ?? -1);
-                    benchmarkHandler.StoreReceivedBrushTimings(clientId, timeToProcessBrushLocally, timeToUpdatePlots, ping);
+                    benchmarkHandler.StoreReceivedBrushTimings(clientId, timeToProcessBrushLocally, timeToUpdatePlots, ping); // TODO: add time
 
-                    serverResponse.type = "ping";
-                    serverResponse.benchMark = new BenchMark()
-                    {
-                        timeSent = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                        pingType = 0,
-                    };
-                    _ = wsc.SendMessageToClient(serverResponse, socketId);
+                    // serverResponse.type = "ping";
+                    // serverResponse.benchMark = new BenchMark()
+                    // {
+                    //     timeSent = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    //     pingType = 0,
+                    // };
+                    // // _ = wsc.SendMessageToClient(serverResponse, socketId);
+                    // _ = wsc.BroadcastMessage(serverResponse, 0);
                 }
+                break;
+            
+            case "doPing":
+                serverResponse.type = "ping";
+                serverResponse.benchMark = new BenchMark()
+                {
+                    timeSent = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    pingType = 0,
+                };
+                // _ = wsc.SendMessageToClient(serverResponse, socketId);
+                _ = wsc.BroadcastMessage(serverResponse, 0);
                 break;
 
             case "ping":
                 {
-                    var clientId = clientMessage.benchMark?.clientId ?? throw new Exception("Null");
-                    var ping = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - (clientMessage.benchMark?.timeSent ?? throw new Exception("Null"));
-                    var pingType = clientMessage.benchMark?.pingType ?? throw new Exception("Null");
-                    benchmarkHandler.StorePing(clientId, ping, pingType);
+                    // var clientId = clientMessage.benchMark?.clientId ?? throw new Exception("Null");
+                    // var ping = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - (clientMessage.benchMark?.timeSent ?? throw new Exception("Null"));
+                    // var pingType = clientMessage.benchMark?.pingType ?? throw new Exception("Null");
+                    // benchmarkHandler.StorePing(clientId, ping, 1); // TODO: fix
                 }
                 break;
 
             case "end":
-                benchmarkHandler.DownloadAveragedData();
+                benchmarkHandler.DownloadSummarizedData();
                 benchmarkHandler.Reset();
                 serverResponse.benchMark = new BenchMark()
                 {
