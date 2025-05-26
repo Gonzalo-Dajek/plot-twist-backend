@@ -68,7 +68,7 @@ public class WebSocketCoordinator
         }
     }
 
-    //
+
     // public async Task SendSelectionPerDataSet(Dictionary<string, rangeSet> selectionPerDataSet, Dictionary<int, string> dataSetPerClient, int socketId) {
     //     var options = new JsonSerializerOptions
     //     {
@@ -96,6 +96,45 @@ public class WebSocketCoordinator
     //         }
     //     }
     // }
+    
+
+    public async Task benchMarkSendSelectionPerClient(Dictionary<int, rangeSet> selectionPerClient, int socketId, int clientId, int brushId) {
+        var options = new JsonSerializerOptions
+        {
+            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+        };       
+        
+        foreach (var socketPair in _webSockets)
+        {
+            var socket = socketPair.Value;
+            var id = socketPair.Key;
+            if (HasBeenInitialized(id)) {
+                RangeSelection[] rangeSelections = selectionPerClient[id].ToArr();
+                BenchMark benchMark = new BenchMark()
+                {
+                    action = "translatedBrushClient",
+                    clientId = clientId,
+                    timeSent = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    brushId = brushId,
+                    range=rangeSelections,
+                };
+                
+                Message m = new Message() {
+                    type="BenchMark",
+                    benchMark = benchMark,
+                };
+            
+                var jsonResponse = JsonSerializer.Serialize(m, options);
+                var responseBytes = Encoding.UTF8.GetBytes(jsonResponse);
+            
+                if (socket.State == WebSocketState.Open && id!=socketId)
+                {
+                    await socket.SendAsync(new ArraySegment<byte>(responseBytes), WebSocketMessageType.Text, true, CancellationToken.None);
+                }
+            }
+        }
+    }
+    
     public async Task SendSelectionPerClient(Dictionary<int, rangeSet> selectionPerClient, int socketId) {
         var options = new JsonSerializerOptions
         {

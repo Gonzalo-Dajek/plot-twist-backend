@@ -1,3 +1,4 @@
+using System.Net.NetworkInformation;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using plot_twist_back_end.Messages;
@@ -15,6 +16,7 @@ public class BenchmarkHandler
         public double? TimeToProcessBrushLocally { get; set; }
         public double? TimeToUpdatePlots { get; set; }
         public double? TimeToProcess { get; set; } 
+        public double? Ping { get; set; }
         public long TimeOfEvent { get; set; } }
     
     private class activeClient {
@@ -28,7 +30,9 @@ public class BenchmarkHandler
     private class receivedEventEntry {
         public double? TimeToProcessBrushLocally { get; set; }
         public double? TimeToUpdatePlots { get; set; }
+        public double? Ping { get; set; }
         public long TimeOfEvent { get; set; } }
+    
     
     private class passiveClient {
         public int ClientId { get; set; }
@@ -68,7 +72,12 @@ public class BenchmarkHandler
         _receivedBrushTimings[clientId] = passiveClient;
     }
 
-    public void StoreSentBrushTimings(int clientId, double? timeToProcessBrushLocally, double? timeToUpdatePlots, double? timeToProcess)
+    public bool isClientInitialized(int clientId)
+    {
+        return _sentBrushTimings.ContainsKey(clientId);
+    }
+
+    public void StoreSentBrushTimings(int clientId, double? timeToProcessBrushLocally, double? timeToUpdatePlots, double? timeToProcess, double? ping)
     {
         if (!_sentBrushTimings.TryGetValue(clientId, out var activeClient))
         {
@@ -80,7 +89,8 @@ public class BenchmarkHandler
             TimeToProcessBrushLocally = timeToProcessBrushLocally,
             TimeToUpdatePlots = timeToUpdatePlots,
             TimeToProcess = timeToProcess,
-            TimeOfEvent = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            TimeOfEvent = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()-(long)(ping!/2)-(long)timeToUpdatePlots!-(long)timeToProcessBrushLocally!,
+            Ping = ping,
         });
     }
 
@@ -96,10 +106,11 @@ public class BenchmarkHandler
             TimeToProcessBrushLocally = timeToProcessBrushLocally,
             TimeToUpdatePlots = timeToUpdatePlots,
             TimeOfEvent = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            Ping = ping,
         });
     }
 
-    public void StorePing(int clientId, long pingMs, int sentOrReceived)
+    public void StorePing(int clientId, double pingMs, int sentOrReceived)
     {
         var isSent = sentOrReceived == 1;
     

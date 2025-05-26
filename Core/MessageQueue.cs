@@ -5,26 +5,10 @@ using plot_twist_back_end.Messages;
 
 public class MessageQueue {
     private readonly ConcurrentQueue<string> _messageQueue = new();
-    private const int MaxQueueSize = 20; // TODO: may be needed to test
     private bool _isProcessing = false;
-    
-    public int GetMaxQueueSize()
-    {
-        return MaxQueueSize;
-    }
-    public int GetQueueLength()
-    {
-        return _messageQueue.Count;
-    }
 
     public async Task EnqueueMessage(string message, int socketId, BrushHandler bh, LinkHandler lh, WebSocketCoordinator wsc, BenchmarkHandler benchmarkHandler)
     {
-        // if (_messageQueue.Count >= MaxQueueSize)
-        // {
-        //     Console.WriteLine("Discarded Message");
-        //     return;
-        // }
-
         _messageQueue.Enqueue(message);
 
         if (!_isProcessing)
@@ -77,12 +61,13 @@ public class MessageQueue {
             case "selection":
                 serverResponse.type = "selection";
                 serverResponse.range = clientMessage.range;
-                bh.updateSelection(socketId, clientMessage.range, lh, wsc);
+                bh.updateSelection(socketId, clientMessage.range!, lh, wsc);
+                bh.updateClientSelections(lh, wsc, socketId);
                 break;
             case "addClient":
                 wsc.InitializeClient(socketId);
-                lh.AddDataset(clientMessage.dataSet?.name);
-                bh.AddClient(socketId, clientMessage.dataSet?.name, clientMessage.dataSet?.fields, wsc, lh);
+                lh.AddDataset(clientMessage.dataSet?.name!);
+                bh.AddClient(socketId, clientMessage.dataSet?.name!, clientMessage.dataSet?.fields!, wsc, lh);
                 bh.updateClientSelections(lh, wsc, 0);
                 bh.updateClientsLinks(lh, wsc);
                 break;
@@ -108,14 +93,16 @@ public class MessageQueue {
             case "addClientBenchMark":
                 var clientInfo = clientMessage.benchMark?.clientInfo ?? throw new InvalidOperationException("clientInfo should not be null");
                 int id = clientMessage.benchMark?.clientId ?? throw new InvalidOperationException("clientId should not be null");
+                Console.WriteLine($"addClientBenchMark: Adding client {id} to bench mark");
                 benchmarkHandler.AddClient(id, clientInfo);
 
                 wsc.InitializeClient(socketId);
-                lh.AddDataset(clientMessage.dataSet?.name);
-                bh.AddClient(socketId, clientMessage.dataSet?.name, clientMessage.dataSet?.fields, wsc, lh);
+                lh.AddDataset(clientMessage.dataSet?.name!);
+                bh.AddClient(socketId, clientMessage.dataSet?.name!, clientMessage.dataSet?.fields!, wsc, lh);
                 break;
 
             case "start":
+                Console.WriteLine("start: Sending benchmark start");
                 serverResponse.benchMark = new BenchMark()
                 {
                     action = "start",
@@ -123,69 +110,74 @@ public class MessageQueue {
                 bh.updateClientsLinks(lh, wsc);
                 _ = wsc.BroadcastMessage(serverResponse, 0);
                 break;
+            
+            case "doBrush":
+                Console.WriteLine($"1_doBrush: sending do Brush from and to {clientMessage.benchMark?.clientId!}");
+                serverResponse.benchMark = new BenchMark()
+                {
+                    action = "doBrushClient",
+                    range = clientMessage.benchMark?.range!,
+                    clientId = clientMessage.benchMark?.clientId ?? -1,
+                    timeSent = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    brushId = clientMessage.benchMark?.brushId ?? -1,
+                };
+                _ = wsc.SendMessageToClient(serverResponse, socketId);
+                break;
 
-            case "brush":
+            case "brushed":
+                Console.WriteLine($"2_brushed: The active client {clientMessage.benchMark?.clientId!} already brushed");
                 {
                     var clientId = clientMessage.benchMark?.clientId ?? -1;
                     var timeToProcessBrushLocally = clientMessage.benchMark?.timeToProcessBrushLocally ?? -1;
                     var timeToUpdatePlots = clientMessage.benchMark?.timeToUpdatePlots ?? -1;
+                    var timeSent = clientMessage.benchMark?.timeSent ?? -1;
+                    var brushId = clientMessage.benchMark?.brushId ?? -1;
+                    
                     var stopwatch = Stopwatch.StartNew();
-                    
-                    bh.updateSelection(socketId, clientMessage.benchMark?.range, lh, wsc);
-                    
+                    bh.updateSelection(socketId, clientMessage.benchMark?.range!, lh, wsc);
+                    bh.benchMarkUpdateClientSelections(lh, wsc, socketId, clientId, brushId); 
                     stopwatch.Stop();
                     var timeToProcess = stopwatch.Elapsed.TotalMilliseconds;
                     
-                    benchmarkHandler.StoreSentBrushTimings(clientId, timeToProcessBrushLocally, timeToUpdatePlots, timeToProcess); 
-                    
-                    // serverResponse.type = "ping";
-                    // serverResponse.benchMark = new BenchMark()
+                    var ping = (double)(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - timeSent) - timeToUpdatePlots - timeToProcess;
+                    benchmarkHandler.StoreSentBrushTimings(clientId, timeToProcessBrushLocally, timeToUpdatePlots, timeToProcess, ping); // TODO add brushId
+                    benchmarkHandler.StorePing(clientId, ping, 1); 
+                }
+                break;
+
+            case "selectionMade":
+                {
+                    // var clientId = clientMessage.benchMark?.clientId ?? -1;
+                    // if (benchmarkHandler.isClientInitialized(clientId))
                     // {
-                    //     timeSent = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    //     pingType = 1,
-                    // };
-                    // // _ = wsc.SendMessageToClient(serverResponse, socketId);
-                    // _ = wsc.BroadcastMessage(serverResponse, 0);
+                    //     var timeToProcessBrushLocally = clientMessage.benchMark?.timeToProcessBrushLocally ?? -1;
+                    //     var timeToUpdatePlots = clientMessage.benchMark?.timeToUpdatePlots ?? -1;
+                    //     var brushId = clientMessage.benchMark?.brushId ?? -1;
+                    //
+                    //     var stopwatch = Stopwatch.StartNew();
+                    //     bh.updateSelection(socketId, clientMessage.benchMark?.range!, lh, wsc);
+                    //     bh.benchMarkUpdateClientSelections(lh, wsc, socketId, clientId, brushId); 
+                    //     stopwatch.Stop();
+                    //     var timeToProcess = stopwatch.Elapsed.TotalMilliseconds;
+                    //
+                    //     // benchmarkHandler.StoreSentBrushTimings(clientId, timeToProcessBrushLocally, timeToUpdatePlots, timeToProcess, -1);
+                    // }
                 }
                 break;
 
             case "receivedBrush":
                 {
+                    Console.WriteLine($"3_receivedBrush: The passive client {clientMessage.benchMark?.clientId!} brushed");
                     var clientId = clientMessage.benchMark?.clientId ?? -1;
+                    var brushId = clientMessage.benchMark?.brushId ?? -1;
+                    var brushClientId = clientMessage.benchMark?.brushClientId ?? -1;
                     var timeToProcessBrushLocally = clientMessage.benchMark?.timeToProcessBrushLocally ?? -1;
                     var timeToUpdatePlots = clientMessage.benchMark?.timeToUpdatePlots ?? -1;
+                    var timeSent = clientMessage.benchMark?.timeSent ?? -1;
+                    
                     var post = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                    var ping = post - (clientMessage.benchMark?.timeReceived ?? -1);
-                    benchmarkHandler.StoreReceivedBrushTimings(clientId, timeToProcessBrushLocally, timeToUpdatePlots, ping); // TODO: add time
-
-                    // serverResponse.type = "ping";
-                    // serverResponse.benchMark = new BenchMark()
-                    // {
-                    //     timeSent = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    //     pingType = 0,
-                    // };
-                    // // _ = wsc.SendMessageToClient(serverResponse, socketId);
-                    // _ = wsc.BroadcastMessage(serverResponse, 0);
-                }
-                break;
-            
-            case "doPing":
-                serverResponse.type = "ping";
-                serverResponse.benchMark = new BenchMark()
-                {
-                    timeSent = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    pingType = 0,
-                };
-                // _ = wsc.SendMessageToClient(serverResponse, socketId);
-                _ = wsc.BroadcastMessage(serverResponse, 0);
-                break;
-
-            case "ping":
-                {
-                    // var clientId = clientMessage.benchMark?.clientId ?? throw new Exception("Null");
-                    // var ping = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - (clientMessage.benchMark?.timeSent ?? throw new Exception("Null"));
-                    // var pingType = clientMessage.benchMark?.pingType ?? throw new Exception("Null");
-                    // benchmarkHandler.StorePing(clientId, ping, 1); // TODO: fix
+                    var ping = post - timeSent - timeToProcessBrushLocally - timeToUpdatePlots;
+                    benchmarkHandler.StoreReceivedBrushTimings(clientId, timeToProcessBrushLocally, timeToUpdatePlots, ping); // TODO: add brushId and brushClientId
                 }
                 break;
 
@@ -200,5 +192,4 @@ public class MessageQueue {
                 break;
         }
     }
-
 }

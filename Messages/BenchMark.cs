@@ -9,6 +9,7 @@ public struct BenchMark {
     public RangeSelection[]? range { get; set; }
     public double timeReceived { get; set; }
     public int clientId { get; set; }
+    public int brushClientId { get; set; }
     public int pingType { get; set; }
     public BenchmarkConfig? clientInfo { get; set; }
 }
