@@ -6,5 +6,5 @@ public struct Message
     public RangeSelection[]? range { get; set; }
     public DataSetInfo? dataSet { get; set; }
     public LinkInfo[]? links { get; set; }
-    public BenchMark? benchMark { get; set; }
+    public BenchMarkMsg? benchMark { get; set; }
 }

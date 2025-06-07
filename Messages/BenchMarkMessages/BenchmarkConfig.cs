@@ -16,6 +16,6 @@ public struct BenchmarkConfig
     public int numberOfClientBrushing { get; set; }
     public int numberOfDataSets { get; set; }
     public double testDuration { get; set; }
-    public int dataSetNum { get; set; } // TODO: remove
-    public int clientId { get; set; } // TODO: remove
+    public int dataSetNum { get; set; } 
+    public int clientId { get; set; }
 }

@@ -8,26 +8,26 @@ public class BrushHandler {
     private Dictionary<int, RangeSelection[]> _selectionsClients =
         new Dictionary<int, RangeSelection[]>();
 
-    public async void AddClient(int socketId, string dataSet, string[] fields, WebSocketCoordinator wsc, LinkHandler lh) 
+    public async void AddClient(int socketId, string dataSet, string[] fields, WebSocketHandler wsc, LinkHandler lh) 
     {
         _clients[socketId] = dataSet;
         _fields[dataSet] = fields; 
         _selectionsClients[socketId] = new RangeSelection[] { }; 
     }
 
-    public void removeClient(int socketId, LinkHandler lh, WebSocketCoordinator wsc) {
+    public void removeClient(int socketId, LinkHandler lh, WebSocketHandler wsc) {
         this._clients.Remove(socketId);
         this._selectionsClients.Remove(socketId);
         this.updateClientSelections(lh, wsc, 0);
     }
 
-    public async void updateSelection(int socketId, RangeSelection[] socketSelection, LinkHandler lh, WebSocketCoordinator wsc) {
+    public async void updateSelection(int socketId, RangeSelection[] socketSelection, LinkHandler lh, WebSocketHandler wsc) {
         if (socketId != 0) {
             this._selectionsClients[socketId] = socketSelection;
         }
     }
 
-    public async void updateClientsLinks(LinkHandler lh, WebSocketCoordinator wsc) {
+    public async void updateClientsLinks(LinkHandler lh, WebSocketHandler wsc) {
         Dictionary<string, LinkInfo[]> linkGroupPerDataSet =
             new Dictionary<string, LinkInfo[]>();
         
@@ -44,7 +44,7 @@ public class BrushHandler {
         wsc.UpdateLinksPerClient(linkGroupPerClient);
     }
 
-    public async void updateClientSelections(LinkHandler lh, WebSocketCoordinator wsc, int socketId) {
+    public async void updateClientSelections(LinkHandler lh, WebSocketHandler wsc, int socketId) {
         Dictionary<int, rangeSet> interesectionSelection = new Dictionary<int, rangeSet>(){};
         foreach (var id in this._clients.Keys) {
             interesectionSelection.Add(id, new rangeSet());
@@ -73,30 +73,5 @@ public class BrushHandler {
         this._clients.Clear();
         this._fields.Clear();
         this._selectionsClients.Clear();
-    }
-    
-    public async void benchMarkUpdateClientSelections(LinkHandler lh, WebSocketCoordinator wsc, int socketId, int clientId, int brushId) {
-        Dictionary<int, rangeSet> interesectionSelection = new Dictionary<int, rangeSet>(){};
-        foreach (var id in this._clients.Keys) {
-            interesectionSelection.Add(id, new rangeSet());
-        }
-        
-        foreach (var (id, selection) in this._selectionsClients) {
-            string dataSet1 = this._clients[id];
-            foreach (var (id2, selection2) in this._selectionsClients) {
-                string dataSet2 = this._clients[id2];
-
-                if (id != id2) {
-                    foreach (var rangeSelection in selection) { 
-                        var selectionWithLinks = lh.Translate(rangeSelection, dataSet1, dataSet2);
-                        if (selectionWithLinks != null) {
-                            interesectionSelection[id2].AddSelection(selectionWithLinks.Value);
-                        }
-                    }                   
-                }
-            }
-        }
-        
-        await wsc.benchMarkSendSelectionPerClient(interesectionSelection, socketId, clientId, brushId);       
     }
 }

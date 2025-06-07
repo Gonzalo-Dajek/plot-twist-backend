@@ -15,7 +15,7 @@ public static class PlotTwistBackEnd
         var services = builder.Services;
         services.AddCors(options =>
         {
-            options.AddPolicy("AllowLocalhost", policyBuilder =>
+            options.AddPolicy("AllowRequestFromAnyOrigin", policyBuilder =>
             {
                 policyBuilder.AllowAnyOrigin() // Allow requests from a frontend served anywhere
                     .AllowAnyHeader()
@@ -29,15 +29,16 @@ public static class PlotTwistBackEnd
         {
         }
 
-        app.UseCors("AllowLocalhost");
+        app.UseCors("AllowRequestFromAnyOrigin");
         app.UseHttpsRedirection();
         app.UseWebSockets();
         
-        var wsc = new WebSocketCoordinator();
+        var wsc = new WebSocketHandler();
         var lh = new LinkHandler();
         var bh = new BrushHandler();
-        var mq = new MessageQueue();
+        
         var benchMark = new BenchmarkHandler();
+        var mq = new MessageHandler();
 
         // WebSocket request handling
         app.Use(async (context, next) =>
@@ -58,10 +59,10 @@ public static class PlotTwistBackEnd
 
     private static async Task HandleWebSocketCommunication(
         WebSocket webSocket,
-        WebSocketCoordinator wsc,
+        WebSocketHandler wsc,
         LinkHandler lh,
         BrushHandler bh,
-        MessageQueue mq,
+        MessageHandler mq,
         BenchmarkHandler benchmarkHandler)
     {
         // Add the WebSocket to the manager and get the assigned id
@@ -77,7 +78,7 @@ public static class PlotTwistBackEnd
             // Console.WriteLine($"Received from {socketId}:");
             // Console.WriteLine(receivedMessage);
         
-            await mq.EnqueueMessage(receivedMessage, socketId, bh, lh, wsc, benchmarkHandler);
+            mq.handleMessage(receivedMessage, socketId, bh, lh, wsc, benchmarkHandler);
         
             result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
         }

@@ -11,13 +11,29 @@ public class BenchmarkHandler
         public double ping { get; set; }
         public double TimeOfEvent { get; set; }
     }
+    
+    // Acks ---------------------------------------------------------------------------------------------------------- //
+    private class PendingEvent
+    {
+        public bool WasSentBrush { get; set; }
+        public double? TimeToProcessBrushLocally { get; set; }
+        public long? TimeToProcessBrushTime { get; set; }
+        public double? TimeToUpdatePlots { get; set; }
+        public double? TimeToProcessBrush { get; set; }
+    }
+
+    // Key = (clientId, brushId); Value = the buffered times
+    private Dictionary<(int clientId, long brushId), PendingEvent> _pendingEvents = new();
+    
     // Sent Brushes -------------------------------------------------------------------------------------------------- //
     private class sentEventEntry {
         public double? TimeToProcessBrushLocally { get; set; }
         public double? TimeToUpdatePlots { get; set; }
         public double? TimeToProcess { get; set; } 
         public double? Ping { get; set; }
-        public long TimeOfEvent { get; set; } }
+        public long TimeOfEvent { get; set; }
+        public long TimeOfReceivedAck { get; set; }
+    }
     
     private class activeClient {
         public int ClientId { get; set; }
@@ -71,13 +87,55 @@ public class BenchmarkHandler
         var passiveClient = new passiveClient { ClientId = clientId};
         _receivedBrushTimings[clientId] = passiveClient;
     }
-
-    public bool isClientInitialized(int clientId)
+    
+    public void RecordProcessBrushInServer(int clientId, long brushId, double timeToProcess)
     {
-        return _sentBrushTimings.ContainsKey(clientId);
+        var key = (clientId, brushId);
+        var pe = new PendingEvent { WasSentBrush = true, TimeToProcessBrush = timeToProcess};
+        _pendingEvents[key] = pe; 
+    }
+    
+    public void RecordUpdatePlots(int clientId, long brushId, double timeToUpdatePlots, bool wasSentBrush)
+    {
+        var key = (clientId, brushId);
+        if (!_pendingEvents.TryGetValue(key, out var pe))
+        {
+            pe = new PendingEvent { WasSentBrush = wasSentBrush };
+            _pendingEvents[key] = pe; 
+        }
+
+        pe.WasSentBrush = wasSentBrush;
+        pe.TimeToUpdatePlots = timeToUpdatePlots;
+        
+        if (pe.WasSentBrush)
+        {
+            StoreSentBrushTimings(clientId, pe.TimeToProcessBrushLocally, timeToUpdatePlots, pe.TimeToProcessBrush, -1, pe.TimeToProcessBrushTime ?? -1, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        }
+        else
+        {
+            StoreReceivedBrushTimings(clientId, pe.TimeToProcessBrushLocally, pe.TimeToUpdatePlots, -1, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        }
+    }
+    
+    public void RecordProcessBrush(int clientId, long brushId, double timeToProcessBrush, bool wasSentBrush)
+    {
+        var key = (clientId, brushId);
+        if (!_pendingEvents.TryGetValue(key, out var pe))
+        {
+            pe = new PendingEvent { WasSentBrush = wasSentBrush };
+            _pendingEvents[key] = pe; 
+        }
+        else
+        {
+            pe.WasSentBrush = wasSentBrush; 
+        }
+
+        pe.TimeToProcessBrushLocally = timeToProcessBrush;
+        pe.TimeToProcessBrushTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
     }
 
-    public void StoreSentBrushTimings(int clientId, double? timeToProcessBrushLocally, double? timeToUpdatePlots, double? timeToProcess, double? ping)
+    
+    public void StoreSentBrushTimings(int clientId, double? timeToProcessBrushLocally, double? timeToUpdatePlots, double? timeToProcess, double? ping, long timeOfEvent, long timeOfReceivedAck)
     {
         if (!_sentBrushTimings.TryGetValue(clientId, out var activeClient))
         {
@@ -89,12 +147,13 @@ public class BenchmarkHandler
             TimeToProcessBrushLocally = timeToProcessBrushLocally,
             TimeToUpdatePlots = timeToUpdatePlots,
             TimeToProcess = timeToProcess,
-            TimeOfEvent = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()-(long)(ping!/2)-(long)timeToUpdatePlots!-(long)timeToProcessBrushLocally!,
+            TimeOfEvent = timeOfEvent,
             Ping = ping,
+            TimeOfReceivedAck = timeOfReceivedAck
         });
     }
 
-    public void StoreReceivedBrushTimings(int clientId, double? timeToProcessBrushLocally, double? timeToUpdatePlots, double? ping)
+    public void StoreReceivedBrushTimings(int clientId, double? timeToProcessBrushLocally, double? timeToUpdatePlots, double? ping, long timeOfEvent)
     {
         if (!_receivedBrushTimings.TryGetValue(clientId, out var clientBenchmark))
         {
@@ -105,7 +164,7 @@ public class BenchmarkHandler
         {
             TimeToProcessBrushLocally = timeToProcessBrushLocally,
             TimeToUpdatePlots = timeToUpdatePlots,
-            TimeOfEvent = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            TimeOfEvent = timeOfEvent,
             Ping = ping,
         });
     }
@@ -159,282 +218,282 @@ public class BenchmarkHandler
     }
 
     public void DownloadSummarizedData()
-    {
-        var config = _referenceConfig!.Value;
-        string directoryPath = "BenchMarkResults";
-        Directory.CreateDirectory(directoryPath);
-
-        string fileName = Path.Combine(directoryPath,
-            $"AVG_{config.dataDistribution}" +
-            $"_plots:{config.plotsAmount}" +
-            $"_cols:{config.numColumnsAmount}" +
-            $"_catCols:{config.catColumnsAmount}" +
-            $"_rows:{config.entriesAmount}" +
-            $"_dims:{config.numDimensionsSelected}" +
-            $"_catDims:{config.catDimensionsSelected}" +
-            $"_links:{config.numFieldGroupsAmount}" +
-            $"_catLinks:{config.catFieldGroupsAmount}" +
-            $"_bSize:{config.brushSize:0.###}" +
-            $"_bSpeed:{config.stepSize:0.###}" +
-            $"_clients:{config.numberOfClientBrushing}" +
-            $"_sets:{config.numberOfDataSets}" +
-            $"_duration:{config.testDuration}.json");
-
-        // Utility function for stats
-        static (double avg, double min, double max, double stddev) CalcStats(List<double> values)
         {
-            if (values.Count == 0) return (0, 0, 0, 0);
-            double avg = values.Average();
-            double min = values.Min();
-            double max = values.Max();
-            double std = Math.Sqrt(values.Sum(v => Math.Pow(v - avg, 2)) / values.Count);
-            return (avg, min, max, std);
-        }
+            var config = _referenceConfig!.Value;
+            string directoryPath = "BenchMarkResults";
+            Directory.CreateDirectory(directoryPath);
 
-        // Per-client summaries (Sent)
-        var sentBrushData = _sentBrushTimings.ToDictionary(
-            kvp => kvp.Key,
-            kvp =>
+            string fileName = Path.Combine(directoryPath,
+                $"AVG_{config.dataDistribution}" +
+                $"_plots:{config.plotsAmount}" +
+                $"_cols:{config.numColumnsAmount}" +
+                $"_catCols:{config.catColumnsAmount}" +
+                $"_rows:{config.entriesAmount}" +
+                $"_dims:{config.numDimensionsSelected}" +
+                $"_catDims:{config.catDimensionsSelected}" +
+                $"_links:{config.numFieldGroupsAmount}" +
+                $"_catLinks:{config.catFieldGroupsAmount}" +
+                $"_bSize:{config.brushSize:0.###}" +
+                $"_bSpeed:{config.stepSize:0.###}" +
+                $"_clients:{config.numberOfClientBrushing}" +
+                $"_sets:{config.numberOfDataSets}" +
+                $"_duration:{config.testDuration}.json");
+
+            // Utility function for stats
+            static (double avg, double min, double max, double stddev) CalcStats(List<double> values)
             {
-                var client = kvp.Value;
-                var timeToProcessBrushLocally = client.SentEventList
-                    .Where(e => e.TimeToProcessBrushLocally.HasValue)
-                    .Select(e => e.TimeToProcessBrushLocally!.Value).ToList();
-                var timeToUpdatePlots = client.SentEventList
-                    .Where(e => e.TimeToUpdatePlots.HasValue)
-                    .Select(e => e.TimeToUpdatePlots!.Value).ToList();
-                var timeToProcess = client.SentEventList
-                    .Where(e => e.TimeToProcess.HasValue)
-                    .Select(e => e.TimeToProcess!.Value).ToList();
-                var pings = client.PingEventList.Select(p => p.ping).ToList();
+                if (values.Count == 0) return (0, 0, 0, 0);
+                double avg = values.Average();
+                double min = values.Min();
+                double max = values.Max();
+                double std = Math.Sqrt(values.Sum(v => Math.Pow(v - avg, 2)) / values.Count);
+                return (avg, min, max, std);
+            }
 
-                var (avgLoc, minLoc, maxLoc, stdLoc) = CalcStats(timeToProcessBrushLocally);
-                var (avgUpd, minUpd, maxUpd, stdUpd) = CalcStats(timeToUpdatePlots);
-                var (avgProc, minProc, maxProc, stdProc) = CalcStats(timeToProcess);
-                var (avgPing, minPing, maxPing, stdPing) = CalcStats(pings);
-
-                return new
+            // Per-client summaries (Sent)
+            var sentBrushData = _sentBrushTimings.ToDictionary(
+                kvp => kvp.Key,
+                kvp =>
                 {
-                    client.ClientId,
-                    AvgTimeToProcessBrushLocally = avgLoc,
-                    MinTimeToProcessBrushLocally = minLoc,
-                    MaxTimeToProcessBrushLocally = maxLoc,
-                    SDTimeToProcessBrushLocally = stdLoc,
-                    AvgTimeToUpdatePlots = avgUpd,
-                    MinTimeToUpdatePlots = minUpd,
-                    MaxTimeToUpdatePlots = maxUpd,
-                    SDTimeToUpdatePlots = stdUpd,
-                    AvgPing = avgPing,
-                    MinPing = minPing,
-                    MaxPing = maxPing,
-                    SDPing = stdPing,
-                    AvgTimeToProcess = avgProc,
-                    MinTimeToProcess = minProc,
-                    MaxTimeToProcess = maxProc,
-                    SDTimeToProcess = stdProc
-                };
-            });
+                    var client = kvp.Value;
+                    var timeToProcessBrushLocally = client.SentEventList
+                        .Where(e => e.TimeToProcessBrushLocally.HasValue)
+                        .Select(e => e.TimeToProcessBrushLocally!.Value).ToList();
+                    var timeToUpdatePlots = client.SentEventList
+                        .Where(e => e.TimeToUpdatePlots.HasValue)
+                        .Select(e => e.TimeToUpdatePlots!.Value).ToList();
+                    var timeToProcess = client.SentEventList
+                        .Where(e => e.TimeToProcess.HasValue)
+                        .Select(e => e.TimeToProcess!.Value).ToList();
+                    var pings = client.PingEventList.Select(p => p.ping).ToList();
 
-        // Per-client summaries (Received)
-        var receivedBrushData = _receivedBrushTimings.ToDictionary(
-            kvp => kvp.Key,
-            kvp =>
-            {
-                var client = kvp.Value;
-                var timeToProcessBrushLocally = client.ReceivedEventList
-                    .Where(e => e.TimeToProcessBrushLocally.HasValue)
-                    .Select(e => e.TimeToProcessBrushLocally!.Value).ToList();
-                var timeToUpdatePlots = client.ReceivedEventList
-                    .Where(e => e.TimeToUpdatePlots.HasValue)
-                    .Select(e => e.TimeToUpdatePlots!.Value).ToList();
-                var pings = client.PingEventList.Select(p => p.ping).ToList();
+                    var (avgLoc, minLoc, maxLoc, stdLoc) = CalcStats(timeToProcessBrushLocally);
+                    var (avgUpd, minUpd, maxUpd, stdUpd) = CalcStats(timeToUpdatePlots);
+                    var (avgProc, minProc, maxProc, stdProc) = CalcStats(timeToProcess);
+                    var (avgPing, minPing, maxPing, stdPing) = CalcStats(pings);
 
-                var (avgLoc, minLoc, maxLoc, stdLoc) = CalcStats(timeToProcessBrushLocally);
-                var (avgUpd, minUpd, maxUpd, stdUpd) = CalcStats(timeToUpdatePlots);
-                var (avgPing, minPing, maxPing, stdPing) = CalcStats(pings);
+                    return new
+                    {
+                        client.ClientId,
+                        AvgTimeToProcessBrushLocally = avgLoc,
+                        MinTimeToProcessBrushLocally = minLoc,
+                        MaxTimeToProcessBrushLocally = maxLoc,
+                        SDTimeToProcessBrushLocally = stdLoc,
+                        AvgTimeToUpdatePlots = avgUpd,
+                        MinTimeToUpdatePlots = minUpd,
+                        MaxTimeToUpdatePlots = maxUpd,
+                        SDTimeToUpdatePlots = stdUpd,
+                        AvgPing = avgPing,
+                        MinPing = minPing,
+                        MaxPing = maxPing,
+                        SDPing = stdPing,
+                        AvgTimeToProcess = avgProc,
+                        MinTimeToProcess = minProc,
+                        MaxTimeToProcess = maxProc,
+                        SDTimeToProcess = stdProc
+                    };
+                });
 
-                return new
+            // Per-client summaries (Received)
+            var receivedBrushData = _receivedBrushTimings.ToDictionary(
+                kvp => kvp.Key,
+                kvp =>
                 {
-                    client.ClientId,
-                    AvgTimeToProcessBrushLocally = avgLoc,
-                    MinTimeToProcessBrushLocally = minLoc,
-                    MaxTimeToProcessBrushLocally = maxLoc,
-                    SDTimeToProcessBrushLocally = stdLoc,
-                    AvgTimeToUpdatePlots = avgUpd,
-                    MinTimeToUpdatePlots = minUpd,
-                    MaxTimeToUpdatePlots = maxUpd,
-                    SDTimeToUpdatePlots = stdUpd,
-                    AvgPing = avgPing,
-                    MinPing = minPing,
-                    MaxPing = maxPing,
-                    SDPing = stdPing
-                };
-            });
+                    var client = kvp.Value;
+                    var timeToProcessBrushLocally = client.ReceivedEventList
+                        .Where(e => e.TimeToProcessBrushLocally.HasValue)
+                        .Select(e => e.TimeToProcessBrushLocally!.Value).ToList();
+                    var timeToUpdatePlots = client.ReceivedEventList
+                        .Where(e => e.TimeToUpdatePlots.HasValue)
+                        .Select(e => e.TimeToUpdatePlots!.Value).ToList();
+                    var pings = client.PingEventList.Select(p => p.ping).ToList();
 
-        // Averages of all sent/received clients
-        static List<double> AvgStatsAcrossClients(
-            Dictionary<int, object> statsPerClient,
-            Func<object, double> selector
-        )
-            => statsPerClient.Values.Select(selector).ToList();
+                    var (avgLoc, minLoc, maxLoc, stdLoc) = CalcStats(timeToProcessBrushLocally);
+                    var (avgUpd, minUpd, maxUpd, stdUpd) = CalcStats(timeToUpdatePlots);
+                    var (avgPing, minPing, maxPing, stdPing) = CalcStats(pings);
 
-        Dictionary<string, double> GetAvgOfStats(string keyName, Func<dynamic, double> selector)
-        {
-            var values = sentBrushData.Values.Select(selector).ToList();
-            return new Dictionary<string, double> { [keyName] = values.Count > 0 ? values.Average() : 0 };
-        }
+                    return new
+                    {
+                        client.ClientId,
+                        AvgTimeToProcessBrushLocally = avgLoc,
+                        MinTimeToProcessBrushLocally = minLoc,
+                        MaxTimeToProcessBrushLocally = maxLoc,
+                        SDTimeToProcessBrushLocally = stdLoc,
+                        AvgTimeToUpdatePlots = avgUpd,
+                        MinTimeToUpdatePlots = minUpd,
+                        MaxTimeToUpdatePlots = maxUpd,
+                        SDTimeToUpdatePlots = stdUpd,
+                        AvgPing = avgPing,
+                        MinPing = minPing,
+                        MaxPing = maxPing,
+                        SDPing = stdPing
+                    };
+                });
 
-        var allSentTimeToProcessBrushLocally = _sentBrushTimings.Values.SelectMany(c => c.SentEventList.Where(e => e.TimeToProcessBrushLocally.HasValue).Select(e => e.TimeToProcessBrushLocally!.Value)).ToList();
-        var allSentTimeToUpdatePlots = _sentBrushTimings.Values.SelectMany(c => c.SentEventList.Where(e => e.TimeToUpdatePlots.HasValue).Select(e => e.TimeToUpdatePlots!.Value)).ToList();
-        var allSentTimeToProcess = _sentBrushTimings.Values.SelectMany(c => c.SentEventList.Where(e => e.TimeToProcess.HasValue).Select(e => e.TimeToProcess!.Value)).ToList();
-        var allSentPings = _sentBrushTimings.Values.SelectMany(c => c.PingEventList.Select(p => p.ping)).ToList();
-        var (avgSL, minSL, maxSL, stdSL) = CalcStats(allSentTimeToProcessBrushLocally);
-        var (avgSU, minSU, maxSU, stdSU) = CalcStats(allSentTimeToUpdatePlots);
-        var (avgST, minST, maxST, stdST) = CalcStats(allSentTimeToProcess);
-        var (avgSP, minSP, maxSP, stdSP) = CalcStats(allSentPings);
+            // Averages of all sent/received clients
+            static List<double> AvgStatsAcrossClients(
+                Dictionary<int, object> statsPerClient,
+                Func<object, double> selector
+            )
+                => statsPerClient.Values.Select(selector).ToList();
 
-        var AvgSentBrushTimings = new
-        {
-            AvgTimeToProcessBrushLocally = avgSL,
-            MinTimeToProcessBrushLocally = minSL,
-            MaxTimeToProcessBrushLocally = maxSL,
-            SDTimeToProcessBrushLocally = stdSL,
-            AvgTimeToUpdatePlots = avgSU,
-            MinTimeToUpdatePlots = minSU,
-            MaxTimeToUpdatePlots = maxSU,
-            SDTimeToUpdatePlots = stdSU,
-            AvgPing = avgSP,
-            MinPing = minSP,
-            MaxPing = maxSP,
-            SDPing = stdSP,
-            AvgTimeToProcess = avgST,
-            MinTimeToProcess = minST,
-            MaxTimeToProcess = maxST,
-            SDTimeToProcess = stdST
-        };
-
-        var allReceivedTimeToProcessBrushLocally = _receivedBrushTimings.Values.SelectMany(c => c.ReceivedEventList.Where(e => e.TimeToProcessBrushLocally.HasValue).Select(e => e.TimeToProcessBrushLocally!.Value)).ToList();
-        var allReceivedTimeToUpdatePlots = _receivedBrushTimings.Values.SelectMany(c => c.ReceivedEventList.Where(e => e.TimeToUpdatePlots.HasValue).Select(e => e.TimeToUpdatePlots!.Value)).ToList();
-        var allReceivedPings = _receivedBrushTimings.Values.SelectMany(c => c.PingEventList.Select(p => p.ping)).ToList();
-        var (avgRL, minRL, maxRL, stdRL) = CalcStats(allReceivedTimeToProcessBrushLocally);
-        var (avgRU, minRU, maxRU, stdRU) = CalcStats(allReceivedTimeToUpdatePlots);
-        var (avgRP, minRP, maxRP, stdRP) = CalcStats(allReceivedPings);
-
-        var AvgReceivedBrushTimings = new
-        {
-            AvgTimeToProcessBrushLocally = avgRL,
-            MinTimeToProcessBrushLocally = minRL,
-            MaxTimeToProcessBrushLocally = maxRL,
-            SDTimeToProcessBrushLocally = stdRL,
-            AvgTimeToUpdatePlots = avgRU,
-            MinTimeToUpdatePlots = minRU,
-            MaxTimeToUpdatePlots = maxRU,
-            SDTimeToUpdatePlots = stdRU,
-            AvgPing = avgRP,
-            MinPing = minRP,
-            MaxPing = maxRP,
-            SDPing = stdRP
-        };
-
-        // Events per client
-        var EventsPerClient = new Dictionary<int, object>();
-        foreach (var kvp in _sentBrushTimings)
-        {
-            var id = kvp.Key;
-            EventsPerClient[id] = new
+            Dictionary<string, double> GetAvgOfStats(string keyName, Func<dynamic, double> selector)
             {
-                PingEvents = kvp.Value.PingEventList.OrderBy(e => e.TimeOfEvent).ToList(),
-                SentBrushEvents = kvp.Value.SentEventList.OrderBy(e => e.TimeOfEvent).ToList(),
-                ReceivedBrushEvents = _receivedBrushTimings.ContainsKey(id)
-                    ? _receivedBrushTimings[id].ReceivedEventList.OrderBy(e => e.TimeOfEvent).ToList()
-                    : new List<receivedEventEntry>()
+                var values = sentBrushData.Values.Select(selector).ToList();
+                return new Dictionary<string, double> { [keyName] = values.Count > 0 ? values.Average() : 0 };
+            }
+
+            var allSentTimeToProcessBrushLocally = _sentBrushTimings.Values.SelectMany(c => c.SentEventList.Where(e => e.TimeToProcessBrushLocally.HasValue).Select(e => e.TimeToProcessBrushLocally!.Value)).ToList();
+            var allSentTimeToUpdatePlots = _sentBrushTimings.Values.SelectMany(c => c.SentEventList.Where(e => e.TimeToUpdatePlots.HasValue).Select(e => e.TimeToUpdatePlots!.Value)).ToList();
+            var allSentTimeToProcess = _sentBrushTimings.Values.SelectMany(c => c.SentEventList.Where(e => e.TimeToProcess.HasValue).Select(e => e.TimeToProcess!.Value)).ToList();
+            var allSentPings = _sentBrushTimings.Values.SelectMany(c => c.PingEventList.Select(p => p.ping)).ToList();
+            var (avgSL, minSL, maxSL, stdSL) = CalcStats(allSentTimeToProcessBrushLocally);
+            var (avgSU, minSU, maxSU, stdSU) = CalcStats(allSentTimeToUpdatePlots);
+            var (avgST, minST, maxST, stdST) = CalcStats(allSentTimeToProcess);
+            var (avgSP, minSP, maxSP, stdSP) = CalcStats(allSentPings);
+
+            var AvgSentBrushTimings = new
+            {
+                AvgTimeToProcessBrushLocally = avgSL,
+                MinTimeToProcessBrushLocally = minSL,
+                MaxTimeToProcessBrushLocally = maxSL,
+                SDTimeToProcessBrushLocally = stdSL,
+                AvgTimeToUpdatePlots = avgSU,
+                MinTimeToUpdatePlots = minSU,
+                MaxTimeToUpdatePlots = maxSU,
+                SDTimeToUpdatePlots = stdSU,
+                AvgPing = avgSP,
+                MinPing = minSP,
+                MaxPing = maxSP,
+                SDPing = stdSP,
+                AvgTimeToProcess = avgST,
+                MinTimeToProcess = minST,
+                MaxTimeToProcess = maxST,
+                SDTimeToProcess = stdST
             };
-        }
 
-        // All events (merged)
-        var AllEvents = new List<(double TimeOfEvent, string Type, int ClientId, object Event)>();
+            var allReceivedTimeToProcessBrushLocally = _receivedBrushTimings.Values.SelectMany(c => c.ReceivedEventList.Where(e => e.TimeToProcessBrushLocally.HasValue).Select(e => e.TimeToProcessBrushLocally!.Value)).ToList();
+            var allReceivedTimeToUpdatePlots = _receivedBrushTimings.Values.SelectMany(c => c.ReceivedEventList.Where(e => e.TimeToUpdatePlots.HasValue).Select(e => e.TimeToUpdatePlots!.Value)).ToList();
+            var allReceivedPings = _receivedBrushTimings.Values.SelectMany(c => c.PingEventList.Select(p => p.ping)).ToList();
+            var (avgRL, minRL, maxRL, stdRL) = CalcStats(allReceivedTimeToProcessBrushLocally);
+            var (avgRU, minRU, maxRU, stdRU) = CalcStats(allReceivedTimeToUpdatePlots);
+            var (avgRP, minRP, maxRP, stdRP) = CalcStats(allReceivedPings);
 
-        foreach (var kvp in _sentBrushTimings)
-        {
-            var id = kvp.Key;
-
-            // Ping events (TimeOfEvent is already double, but we cast for consistency)
-            AllEvents.AddRange(
-                kvp.Value.PingEventList
-                    .Select(e => ((double)e.TimeOfEvent, "Ping",    id, (object)e))
-            );
-
-            // Sent‐brush events (TimeOfEvent is long, so we must cast)
-            AllEvents.AddRange(
-                kvp.Value.SentEventList
-                    .Select(e => ((double)e.TimeOfEvent, "Sent",    id, (object)e))
-            );
-        }
-        foreach (var kvp in _receivedBrushTimings)
-        {
-            var id = kvp.Key;
-            AllEvents.AddRange(
-                kvp.Value.PingEventList
-                    .Select(e => ((double)e.TimeOfEvent, "Ping",    id, (object)e))
-            );
-            AllEvents.AddRange(
-                kvp.Value.ReceivedEventList
-                    .Select(e => ((double)e.TimeOfEvent, "Received", id, (object)e))
-            );
-        }
-        
-        var orderedEvents = AllEvents.OrderBy(e => e.TimeOfEvent).Select(e => new
-        {
-            e.TimeOfEvent,
-            e.Type,
-            e.ClientId,
-            Event = e.Event
-        }).ToList();
-
-        // Full data lists
-        var SentBrushTimingsPerClientFull = _sentBrushTimings.ToDictionary(
-            kvp => kvp.Key,
-            kvp => new
+            var AvgReceivedBrushTimings = new
             {
-                kvp.Value.ClientId,
-                ListTimeToProcessBrushLocally = kvp.Value.SentEventList.Where(e => e.TimeToProcessBrushLocally.HasValue).Select(e => e.TimeToProcessBrushLocally!.Value).ToList(),
-                ListTimeToUpdatePlots = kvp.Value.SentEventList.Where(e => e.TimeToUpdatePlots.HasValue).Select(e => e.TimeToUpdatePlots!.Value).ToList(),
-                ListTimeToProcess = kvp.Value.SentEventList.Where(e => e.TimeToProcess.HasValue).Select(e => e.TimeToProcess!.Value).ToList(),
-                ListPing = kvp.Value.PingEventList.Select(e => e.ping).ToList()
-            });
+                AvgTimeToProcessBrushLocally = avgRL,
+                MinTimeToProcessBrushLocally = minRL,
+                MaxTimeToProcessBrushLocally = maxRL,
+                SDTimeToProcessBrushLocally = stdRL,
+                AvgTimeToUpdatePlots = avgRU,
+                MinTimeToUpdatePlots = minRU,
+                MaxTimeToUpdatePlots = maxRU,
+                SDTimeToUpdatePlots = stdRU,
+                AvgPing = avgRP,
+                MinPing = minRP,
+                MaxPing = maxRP,
+                SDPing = stdRP
+            };
 
-        var ReceivedBrushTimingsPerClientFull = _receivedBrushTimings.ToDictionary(
-            kvp => kvp.Key,
-            kvp => new
+            // Events per client
+            var EventsPerClient = new Dictionary<int, object>();
+            foreach (var kvp in _sentBrushTimings)
             {
-                kvp.Value.ClientId,
-                ListTimeToProcessBrushLocally = kvp.Value.ReceivedEventList.Where(e => e.TimeToProcessBrushLocally.HasValue).Select(e => e.TimeToProcessBrushLocally!.Value).ToList(),
-                ListTimeToUpdatePlots = kvp.Value.ReceivedEventList.Where(e => e.TimeToUpdatePlots.HasValue).Select(e => e.TimeToUpdatePlots!.Value).ToList(),
-                ListPing = kvp.Value.PingEventList.Select(e => e.ping).ToList()
-            });
+                var id = kvp.Key;
+                EventsPerClient[id] = new
+                {
+                    PingEvents = kvp.Value.PingEventList.OrderBy(e => e.TimeOfEvent).ToList(),
+                    SentBrushEvents = kvp.Value.SentEventList.OrderBy(e => e.TimeOfEvent).ToList(),
+                    ReceivedBrushEvents = _receivedBrushTimings.ContainsKey(id)
+                        ? _receivedBrushTimings[id].ReceivedEventList.OrderBy(e => e.TimeOfEvent).ToList()
+                        : new List<receivedEventEntry>()
+                };
+            }
 
-        var summarizedData = new
-        {
-            AvgSentBrushTimings,
-            AvgReceivedBrushTimings,
-            SentBrushTimingsPerClient = sentBrushData,
-            ReceivedBrushTimingsPerClient = receivedBrushData,
-            EventsPerClient,
-            AllEvents = orderedEvents,
-            SentBrushTimingsPerClientFull,
-            ReceivedBrushTimingsPerClientFull
-        };
+            // All events (merged)
+            var AllEvents = new List<(double TimeOfEvent, string Type, int ClientId, object Event)>();
 
-        var jsonOptions = new JsonSerializerOptions
-        {
-            WriteIndented = true,
-            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
-        };
+            foreach (var kvp in _sentBrushTimings)
+            {
+                var id = kvp.Key;
 
-        string json = JsonSerializer.Serialize(summarizedData, jsonOptions);
-        File.WriteAllText(fileName, json);
-        Console.WriteLine($"Averaged benchmark data saved to {fileName}");
-    }
+                // Ping events (TimeOfEvent is already double, but we cast for consistency)
+                AllEvents.AddRange(
+                    kvp.Value.PingEventList
+                        .Select(e => ((double)e.TimeOfEvent, "Ping",    id, (object)e))
+                );
+
+                // Sent‐brush events (TimeOfEvent is long, so we must cast)
+                AllEvents.AddRange(
+                    kvp.Value.SentEventList
+                        .Select(e => ((double)e.TimeOfEvent, "Sent",    id, (object)e))
+                );
+            }
+            foreach (var kvp in _receivedBrushTimings)
+            {
+                var id = kvp.Key;
+                AllEvents.AddRange(
+                    kvp.Value.PingEventList
+                        .Select(e => ((double)e.TimeOfEvent, "Ping",    id, (object)e))
+                );
+                AllEvents.AddRange(
+                    kvp.Value.ReceivedEventList
+                        .Select(e => ((double)e.TimeOfEvent, "Received", id, (object)e))
+                );
+            }
+            
+            var orderedEvents = AllEvents.OrderBy(e => e.TimeOfEvent).Select(e => new
+            {
+                e.TimeOfEvent,
+                e.Type,
+                e.ClientId,
+                Event = e.Event
+            }).ToList();
+
+            // Full data lists
+            var SentBrushTimingsPerClientFull = _sentBrushTimings.ToDictionary(
+                kvp => kvp.Key,
+                kvp => new
+                {
+                    kvp.Value.ClientId,
+                    ListTimeToProcessBrushLocally = kvp.Value.SentEventList.Where(e => e.TimeToProcessBrushLocally.HasValue).Select(e => e.TimeToProcessBrushLocally!.Value).ToList(),
+                    ListTimeToUpdatePlots = kvp.Value.SentEventList.Where(e => e.TimeToUpdatePlots.HasValue).Select(e => e.TimeToUpdatePlots!.Value).ToList(),
+                    ListTimeToProcess = kvp.Value.SentEventList.Where(e => e.TimeToProcess.HasValue).Select(e => e.TimeToProcess!.Value).ToList(),
+                    ListPing = kvp.Value.PingEventList.Select(e => e.ping).ToList()
+                });
+
+            var ReceivedBrushTimingsPerClientFull = _receivedBrushTimings.ToDictionary(
+                kvp => kvp.Key,
+                kvp => new
+                {
+                    kvp.Value.ClientId,
+                    ListTimeToProcessBrushLocally = kvp.Value.ReceivedEventList.Where(e => e.TimeToProcessBrushLocally.HasValue).Select(e => e.TimeToProcessBrushLocally!.Value).ToList(),
+                    ListTimeToUpdatePlots = kvp.Value.ReceivedEventList.Where(e => e.TimeToUpdatePlots.HasValue).Select(e => e.TimeToUpdatePlots!.Value).ToList(),
+                    ListPing = kvp.Value.PingEventList.Select(e => e.ping).ToList()
+                });
+
+            var summarizedData = new
+            {
+                AvgSentBrushTimings,
+                AvgReceivedBrushTimings,
+                SentBrushTimingsPerClient = sentBrushData,
+                ReceivedBrushTimingsPerClient = receivedBrushData,
+                EventsPerClient,
+                AllEvents = orderedEvents,
+                SentBrushTimingsPerClientFull,
+                ReceivedBrushTimingsPerClientFull
+            };
+
+            var jsonOptions = new JsonSerializerOptions
+            {
+                WriteIndented = true,
+                DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+            };
+
+            string json = JsonSerializer.Serialize(summarizedData, jsonOptions);
+            File.WriteAllText(fileName, json);
+            Console.WriteLine($"Averaged benchmark data saved to {fileName}");
+        }
     
     public void Reset()
     {
