@@ -4,7 +4,7 @@ using plot_twist_back_end.Messages;
 
 public class MessageHandler {
 
-    public void handleMessage(string message, int socketId, BrushHandler bh, LinkHandler lh, WebSocketHandler wsc, BenchmarkHandler benchmarkHandler)
+    public async void handleMessage(string message, int socketId, BrushHandler bh, LinkHandler lh, WebSocketHandler wsc, BenchmarkHandler benchmarkHandler)
     {
         var clientMessage = JsonSerializer.Deserialize<Message>(message);
         var serverResponse = new Message();
@@ -28,19 +28,19 @@ public class MessageHandler {
                         break;
                 }
                 bh.updateClientsLinks(lh, wsc);
-                bh.updateClientSelections(lh,wsc,0);
+                await bh.throttledUpdateClientSelections(lh,wsc,0);
                 break;
             case "selection":
                 serverResponse.type = "selection";
                 serverResponse.range = clientMessage.range;
                 bh.updateSelection(socketId, clientMessage.range!, lh, wsc);
-                bh.updateClientSelections(lh, wsc, socketId);
+                await bh.throttledUpdateClientSelections(lh, wsc, socketId);
                 break;
             case "addClient":
                 wsc.InitializeClient(socketId);
                 lh.AddDataset(clientMessage.dataSet?.name!);
                 bh.AddClient(socketId, clientMessage.dataSet?.name!, clientMessage.dataSet?.fields!, wsc, lh);
-                bh.updateClientSelections(lh, wsc, 0);
+                await bh.throttledUpdateClientSelections(lh, wsc, 0);
                 bh.updateClientsLinks(lh, wsc);
                 break;
             case "BenchMark":
@@ -49,7 +49,7 @@ public class MessageHandler {
         }
     }
     
-    private static void HandleBenchmarkAction(Message clientMessage, int socketId, BenchmarkHandler benchmarkHandler, WebSocketHandler wsc, LinkHandler lh, BrushHandler bh)
+    private async static void HandleBenchmarkAction(Message clientMessage, int socketId, BenchmarkHandler benchmarkHandler, WebSocketHandler wsc, LinkHandler lh, BrushHandler bh)
     {
         var serverResponse = new Message();
         serverResponse.type = "BenchMark";
@@ -94,7 +94,7 @@ public class MessageHandler {
 
                     var stopwatch = Stopwatch.StartNew();
                     bh.updateSelection(socketId, clientMessage.benchMark?.range!, lh, wsc);
-                    bh.updateClientSelections(lh, wsc, socketId);
+                    await bh.throttledUpdateClientSelections(lh, wsc, socketId);
                     stopwatch.Stop();
                     
                     var timeToProcess = stopwatch.Elapsed.TotalMilliseconds;
@@ -106,7 +106,7 @@ public class MessageHandler {
             case "updateIndexes":
                 {
                     string status = (clientMessage.benchMark?.isActiveBrush ?? false) ? "Sent" : "Received";
-                    Console.WriteLine($"Index|ClientId:{clientMessage.benchMark?.clientId!}|BrushId:{clientMessage.benchMark?.brushId!}|{status}");
+                    // Console.WriteLine($"Index|ClientId:{clientMessage.benchMark?.clientId!}|BrushId:{clientMessage.benchMark?.brushId!}|{status}");
                     
                     var clientId = clientMessage.benchMark?.clientId ?? -1;
                     var brushId = clientMessage.benchMark?.brushId ?? -1;
@@ -121,7 +121,7 @@ public class MessageHandler {
             case "updatePlots":
                 {
                     string status = (clientMessage.benchMark?.isActiveBrush ?? false)  ? "Sent" : "Received";
-                    Console.WriteLine($"Plots|ClientId:{clientMessage.benchMark?.clientId!}|BrushId:{clientMessage.benchMark?.brushId!}|{status}");
+                    // Console.WriteLine($"Plots|ClientId:{clientMessage.benchMark?.clientId!}|BrushId:{clientMessage.benchMark?.brushId!}|{status}");
                     
                     var clientId = clientMessage.benchMark?.clientId ?? -1;
                     var brushId = clientMessage.benchMark?.brushId ?? -1;

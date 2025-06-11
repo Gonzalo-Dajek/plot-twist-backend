@@ -1,8 +1,12 @@
 // namespace plot_twist_back_end;
+using System.Diagnostics;
 
 using plot_twist_back_end.Messages;
 
 public class BrushHandler {
+    private readonly SemaphoreSlim _throttleLock = new SemaphoreSlim(1, 1);
+    private readonly Stopwatch _stopwatch = Stopwatch.StartNew();
+    private const int ThrottleIntervalMs = 100;
     private Dictionary<int,string> _clients = new Dictionary<int, string>();
     private Dictionary<string, string[]> _fields = new Dictionary<string, string[]>();
     private Dictionary<int, RangeSelection[]> _selectionsClients =
@@ -42,6 +46,24 @@ public class BrushHandler {
         }
 
         wsc.UpdateLinksPerClient(linkGroupPerClient);
+    }
+    
+    public async Task throttledUpdateClientSelections(LinkHandler lh, WebSocketHandler wsc, int socketId)
+    {
+        await _throttleLock.WaitAsync();
+        try
+        {
+            var elapsed = _stopwatch.ElapsedMilliseconds;
+            if (elapsed < ThrottleIntervalMs)
+                await Task.Delay(ThrottleIntervalMs - (int)elapsed);
+
+            _stopwatch.Restart();
+            updateClientSelections(lh, wsc, socketId);
+        }
+        finally
+        {
+            _throttleLock.Release();
+        }
     }
 
     public async void updateClientSelections(LinkHandler lh, WebSocketHandler wsc, int socketId) {

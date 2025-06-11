@@ -43,12 +43,19 @@ public class WebSocketHandler
         {
             var socket = socketPair.Value;
             var id = socketPair.Key;
-            if (HasBeenInitialized(id)) {
-                // if (socket.State == WebSocketState.Open)
-                if (socket.State == WebSocketState.Open && id!=socketId)
-                {
-                    await socket.SendAsync(new ArraySegment<byte>(responseBytes), WebSocketMessageType.Text, true, CancellationToken.None);
-                }
+            if (!HasBeenInitialized(id) || id == socketId || socket.State != WebSocketState.Open)
+                continue;
+
+            try
+            {
+                await socket.SendAsync(new ArraySegment<byte>(responseBytes),
+                    WebSocketMessageType.Text, true, CancellationToken.None);
+            }
+            catch (WebSocketException)
+            {
+                // client hung up; remove it
+                _webSockets.TryRemove(id, out _);
+                _isInitilized.Remove(id);
             }
         }
     }
@@ -64,7 +71,16 @@ public class WebSocketHandler
             var jsonResponse = JsonSerializer.Serialize(message, options);
             var responseBytes = Encoding.UTF8.GetBytes(jsonResponse);
 
-            await socket.SendAsync(new ArraySegment<byte>(responseBytes), WebSocketMessageType.Text, true, CancellationToken.None);
+            try
+            {
+                await socket.SendAsync(new ArraySegment<byte>(responseBytes),
+                    WebSocketMessageType.Text, true, CancellationToken.None);
+            }
+            catch (WebSocketException)
+            {
+                _webSockets.TryRemove(socketId, out _);
+                _isInitilized.Remove(socketId);
+            }
         }
     }
 
@@ -118,9 +134,15 @@ public class WebSocketHandler
                 var jsonResponse = JsonSerializer.Serialize(m, options);
                 var responseBytes = Encoding.UTF8.GetBytes(jsonResponse);
             
-                if (socket.State == WebSocketState.Open && id!=socketId)
+                try
                 {
-                    await socket.SendAsync(new ArraySegment<byte>(responseBytes), WebSocketMessageType.Text, true, CancellationToken.None);
+                    await socket.SendAsync(new ArraySegment<byte>(responseBytes),
+                        WebSocketMessageType.Text, true, CancellationToken.None);
+                }
+                catch (WebSocketException)
+                {
+                    _webSockets.TryRemove(id, out _);
+                    _isInitilized.Remove(id);
                 }
             }
         }
@@ -146,9 +168,15 @@ public class WebSocketHandler
                 var jsonResponse = JsonSerializer.Serialize(m, options);
                 var responseBytes = Encoding.UTF8.GetBytes(jsonResponse);
 
-                if (socket.State == WebSocketState.Open) {
-                    await socket.SendAsync(new ArraySegment<byte>(responseBytes), WebSocketMessageType.Text, true,
-                        CancellationToken.None);
+                try
+                {
+                    await socket.SendAsync(new ArraySegment<byte>(responseBytes),
+                        WebSocketMessageType.Text, true, CancellationToken.None);
+                }
+                catch (WebSocketException)
+                {
+                    _webSockets.TryRemove(id, out _);
+                    _isInitilized.Remove(id);
                 }
             }
         }

@@ -65,28 +65,51 @@ public static class PlotTwistBackEnd
         MessageHandler mq,
         BenchmarkHandler benchmarkHandler)
     {
-        // Add the WebSocket to the manager and get the assigned id
         int socketId = wsc.AddWebSocket(webSocket);
         Console.WriteLine($"New WebSocket connection with id: {socketId}");
 
         var buffer = new byte[1024 * 128];
-        WebSocketReceiveResult result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
 
-        while (!result.CloseStatus.HasValue)
+        try
         {
-            var receivedMessage = Encoding.UTF8.GetString(buffer, 0, result.Count);
-            // Console.WriteLine($"Received from {socketId}:");
-            // Console.WriteLine(receivedMessage);
-        
-            mq.handleMessage(receivedMessage, socketId, bh, lh, wsc, benchmarkHandler);
-        
-            result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
-        }
+            while (webSocket.State == WebSocketState.Open)
+            {
+                WebSocketReceiveResult result;
+                try
+                {
+                    result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+                }
+                catch (WebSocketException ex)
+                {
+                    // Console.WriteLine($"1. WebSocket exception for socket {socketId}: {ex}");
+                    break; // Exit loop on broken connection
+                }
 
-        // Remove the WebSocket from the manager when the connection closes
-        await webSocket.CloseAsync(result.CloseStatus.Value, result.CloseStatusDescription, CancellationToken.None);
-        wsc.RemoveWebSocket(socketId);
-        bh.removeClient(socketId, lh, wsc); 
-        Console.WriteLine($"WebSocket with id {socketId} closed");
+                if (result.CloseStatus.HasValue)
+                    break;
+
+                var receivedMessage = Encoding.UTF8.GetString(buffer, 0, result.Count);
+                // Console.WriteLine($"Received msg: {receivedMessage}");
+                mq.handleMessage(receivedMessage, socketId, bh, lh, wsc, benchmarkHandler);
+            }
+        }
+        finally
+        {
+            if (webSocket.State != WebSocketState.Closed)
+            {
+                try
+                {
+                    await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None);
+                }
+                catch (WebSocketException ex)
+                {
+                    // Console.WriteLine($"2. WebSocket exception for socket {socketId}: {ex}");
+                }
+            }
+
+            wsc.RemoveWebSocket(socketId);
+            bh.removeClient(socketId, lh, wsc);
+            Console.WriteLine($"WebSocket with id {socketId} closed");
+        }
     }
 }
