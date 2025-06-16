@@ -3,8 +3,8 @@ using System.Text.Json;
 using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using plot_twist_back_end.Messages;
-
-public class WebSocketHandler
+namespace plot_twist_back_end.Core;
+public class WebSocketCoordinator
 {
     private ConcurrentDictionary<int, WebSocket> _webSockets = new ConcurrentDictionary<int, WebSocket>();
     private Dictionary<int, bool> _isInitilized = new Dictionary<int, bool>();
@@ -18,12 +18,6 @@ public class WebSocketHandler
         return id;
     }
 
-    public WebSocket GetWebSocketById(int id)
-    {
-        _webSockets.TryGetValue(id, out WebSocket socket);
-        return socket;
-    }
-
     public void RemoveWebSocket(int id)
     {
         _webSockets.TryRemove(id, out _);
@@ -32,6 +26,11 @@ public class WebSocketHandler
 
     public async Task BroadcastMessage(Message message, int socketId)
     {
+        string jsonString = JsonSerializer.Serialize(message, new JsonSerializerOptions { WriteIndented = true });
+        // Console.WriteLine($"Sent message from: {socketId}");
+        // Console.WriteLine(jsonString);
+        // Console.WriteLine("--------------------------------------------------------------------");
+        
         var options = new JsonSerializerOptions
         {
             DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
@@ -113,74 +112,75 @@ public class WebSocketHandler
     //     }
     // }
     
-    public async Task SendSelectionPerClient(Dictionary<int, rangeSet> selectionPerClient, int socketId) {
-        var options = new JsonSerializerOptions
-        {
-            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
-        };       
-        
-        foreach (var socketPair in _webSockets)
-        {
-            var socket = socketPair.Value;
-            var id = socketPair.Key;
-            if (HasBeenInitialized(id)) {
-                RangeSelection[] rangeSelections = selectionPerClient[id].ToArr();
+    // public async Task SendSelectionPerClient(Dictionary<int, rangeSet> selectionPerClient, int socketId) {
+    //     // TODO: move to brush handler
+    //     var options = new JsonSerializerOptions
+    //     {
+    //         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+    //     };       
+    //     
+    //     foreach (var socketPair in _webSockets)
+    //     {
+    //         var socket = socketPair.Value;
+    //         var id = socketPair.Key;
+    //         if (HasBeenInitialized(id)) {
+    //             RangeSelection[] rangeSelections = selectionPerClient[id].ToArr();
+    //
+    //             Message m = new Message() {
+    //                 type="selection",
+    //                 range=rangeSelections,
+    //             };
+    //         
+    //             var jsonResponse = JsonSerializer.Serialize(m, options);
+    //             var responseBytes = Encoding.UTF8.GetBytes(jsonResponse);
+    //         
+    //             try
+    //             {
+    //                 await socket.SendAsync(new ArraySegment<byte>(responseBytes),
+    //                     WebSocketMessageType.Text, true, CancellationToken.None);
+    //             }
+    //             catch (WebSocketException)
+    //             {
+    //                 _webSockets.TryRemove(id, out _);
+    //                 _isInitilized.Remove(id);
+    //             }
+    //         }
+    //     }
+    // }
 
-                Message m = new Message() {
-                    type="selection",
-                    range=rangeSelections,
-                };
-            
-                var jsonResponse = JsonSerializer.Serialize(m, options);
-                var responseBytes = Encoding.UTF8.GetBytes(jsonResponse);
-            
-                try
-                {
-                    await socket.SendAsync(new ArraySegment<byte>(responseBytes),
-                        WebSocketMessageType.Text, true, CancellationToken.None);
-                }
-                catch (WebSocketException)
-                {
-                    _webSockets.TryRemove(id, out _);
-                    _isInitilized.Remove(id);
-                }
-            }
-        }
-    }
-
-    public async void UpdateLinksPerClient(Dictionary<int,LinkInfo[]> linkGroupsPerClient) {
-        var options = new JsonSerializerOptions
-        {
-            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
-        };       
-        
-        foreach (var socketPair in _webSockets)
-        {
-            var socket = socketPair.Value;
-            var id = socketPair.Key;
-
-            if (HasBeenInitialized(id)) {
-                Message m = new Message() {
-                    type = "link",
-                    links = linkGroupsPerClient[id],
-                };
-
-                var jsonResponse = JsonSerializer.Serialize(m, options);
-                var responseBytes = Encoding.UTF8.GetBytes(jsonResponse);
-
-                try
-                {
-                    await socket.SendAsync(new ArraySegment<byte>(responseBytes),
-                        WebSocketMessageType.Text, true, CancellationToken.None);
-                }
-                catch (WebSocketException)
-                {
-                    _webSockets.TryRemove(id, out _);
-                    _isInitilized.Remove(id);
-                }
-            }
-        }
-    }
+    // public async void UpdateLinksPerClient(Dictionary<int,LinkInfo[]> linkGroupsPerClient) {
+    //     var options = new JsonSerializerOptions
+    //     {
+    //         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+    //     };       
+    //     
+    //     foreach (var socketPair in _webSockets)
+    //     {
+    //         var socket = socketPair.Value;
+    //         var id = socketPair.Key;
+    //
+    //         if (HasBeenInitialized(id)) {
+    //             Message m = new Message() {
+    //                 type = "link",
+    //                 links = linkGroupsPerClient[id],
+    //             };
+    //
+    //             var jsonResponse = JsonSerializer.Serialize(m, options);
+    //             var responseBytes = Encoding.UTF8.GetBytes(jsonResponse);
+    //
+    //             try
+    //             {
+    //                 await socket.SendAsync(new ArraySegment<byte>(responseBytes),
+    //                     WebSocketMessageType.Text, true, CancellationToken.None);
+    //             }
+    //             catch (WebSocketException)
+    //             {
+    //                 _webSockets.TryRemove(id, out _);
+    //                 _isInitilized.Remove(id);
+    //             }
+    //         }
+    //     }
+    // }
 
     private bool HasBeenInitialized(int id) {
         _isInitilized.TryGetValue(id, out var isInit);

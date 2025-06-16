@@ -1,5 +1,6 @@
 using System.Net.WebSockets;
 using System.Text;
+using plot_twist_back_end.Core;
 
 namespace plot_twist_back_end;
 public static class PlotTwistBackEnd
@@ -24,29 +25,23 @@ public static class PlotTwistBackEnd
         });
 
         var app = builder.Build();
-        
-        if (app.Environment.IsDevelopment())
-        {
-        }
-
         app.UseCors("AllowRequestFromAnyOrigin");
         app.UseHttpsRedirection();
         app.UseWebSockets();
         
-        var wsc = new WebSocketHandler();
-        var lh = new LinkHandler();
-        var bh = new BrushHandler();
+        var wsCoordinator = new WebSocketCoordinator();
+        var links = new CrossDataSetLinks(wsCoordinator);
+        var selections = new ClientsSelections(wsCoordinator);
+        var benchMark = new Benchmark();
         
-        var benchMark = new BenchmarkHandler();
-        var mq = new MessageHandler();
-
+        var messageHandler = new MessageHandler(selections, links, wsCoordinator, benchMark);
         // WebSocket request handling
         app.Use(async (context, next) =>
         {
             if (context.WebSockets.IsWebSocketRequest)
             {
                 var webSocket = await context.WebSockets.AcceptWebSocketAsync();
-                await HandleWebSocketCommunication(webSocket, wsc, lh, bh, mq, benchMark);
+                await HandleWebSocketCommunication(webSocket, messageHandler);
             }
             else
             {
@@ -57,18 +52,12 @@ public static class PlotTwistBackEnd
         app.Run();
     }
 
-    private static async Task HandleWebSocketCommunication(
-        WebSocket webSocket,
-        WebSocketHandler wsc,
-        LinkHandler lh,
-        BrushHandler bh,
-        MessageHandler mq,
-        BenchmarkHandler benchmarkHandler)
+    private static async Task HandleWebSocketCommunication(WebSocket webSocket, MessageHandler messageHandler)
     {
-        int socketId = wsc.AddWebSocket(webSocket);
+        int socketId = messageHandler.wsCoordinator.AddWebSocket(webSocket);
         Console.WriteLine($"New WebSocket connection with id: {socketId}");
 
-        var buffer = new byte[1024 * 128];
+        var buffer = new byte[1024 * 512];
 
         try
         {
@@ -81,7 +70,7 @@ public static class PlotTwistBackEnd
                 }
                 catch (WebSocketException ex)
                 {
-                    // Console.WriteLine($"1. WebSocket exception for socket {socketId}: {ex}");
+                    Console.WriteLine($"1.DEBUG: Exception for socket {socketId}: {ex}");
                     break; // Exit loop on broken connection
                 }
 
@@ -89,8 +78,8 @@ public static class PlotTwistBackEnd
                     break;
 
                 var receivedMessage = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                // Console.WriteLine($"Received msg: {receivedMessage}");
-                mq.handleMessage(receivedMessage, socketId, bh, lh, wsc, benchmarkHandler);
+                // Console.WriteLine($"Received msg from {socketId}");
+                messageHandler.HandleMessage(receivedMessage, socketId);
             }
         }
         finally
@@ -103,12 +92,12 @@ public static class PlotTwistBackEnd
                 }
                 catch (WebSocketException ex)
                 {
-                    // Console.WriteLine($"2. WebSocket exception for socket {socketId}: {ex}");
+                    Console.WriteLine($"2.DEBUG: Exception for socket {socketId}: {ex}");
                 }
             }
 
-            wsc.RemoveWebSocket(socketId);
-            bh.removeClient(socketId, lh, wsc);
+            messageHandler.wsCoordinator.RemoveWebSocket(socketId);
+            messageHandler.selections.RemoveClient(socketId);
             Console.WriteLine($"WebSocket with id {socketId} closed");
         }
     }

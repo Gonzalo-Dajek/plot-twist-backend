@@ -4,7 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using plot_twist_back_end.Messages;
 
-public class BenchmarkHandler
+public class Benchmark
 {
     // Ping ---------------------------- //
     private class PingEvent
