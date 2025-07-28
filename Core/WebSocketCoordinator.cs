@@ -24,17 +24,20 @@ public class WebSocketCoordinator
         _isInitilized.Remove(id, out _);
     }
 
-    public async Task BroadcastMessage(Message message, int socketId)
+    public async Task BroadcastMessage(Message message, int socketId, bool ignoreNulls = true)
     {
         string jsonString = JsonSerializer.Serialize(message, new JsonSerializerOptions { WriteIndented = true });
         // Console.WriteLine($"Sent message from: {socketId}");
         // Console.WriteLine(jsonString);
         // Console.WriteLine("--------------------------------------------------------------------");
-        
+
         var options = new JsonSerializerOptions
         {
-            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+            DefaultIgnoreCondition = ignoreNulls
+                ? System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+                : System.Text.Json.Serialization.JsonIgnoreCondition.Never
         };
+
         var jsonResponse = JsonSerializer.Serialize(message, options);
         var responseBytes = Encoding.UTF8.GetBytes(jsonResponse);
         
@@ -59,13 +62,15 @@ public class WebSocketCoordinator
         }
     }
     
-    public async Task SendMessageToClient(Message message, int socketId)
+    public async Task SendMessageToClient(Message message, int socketId, bool ignoreNulls = true)
     {
         if (_webSockets.TryGetValue(socketId, out var socket) && socket.State == WebSocketState.Open)
         {
             var options = new JsonSerializerOptions
             {
-                DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+                DefaultIgnoreCondition = ignoreNulls
+                    ? System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+                    : System.Text.Json.Serialization.JsonIgnoreCondition.Never
             };
             var jsonResponse = JsonSerializer.Serialize(message, options);
             var responseBytes = Encoding.UTF8.GetBytes(jsonResponse);

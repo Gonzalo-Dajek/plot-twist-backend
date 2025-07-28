@@ -31,7 +31,7 @@ public static class PlotTwistBackEnd
         
         var wsCoordinator = new WebSocketCoordinator();
         var links = new CrossDataSetLinks(wsCoordinator);
-        var selections = new ClientsSelections(wsCoordinator);
+        var selections = new ClientsSelections(wsCoordinator, links);
         var benchMark = new Benchmark();
         
         var messageHandler = new MessageHandler(selections, links, wsCoordinator, benchMark);
@@ -57,48 +57,49 @@ public static class PlotTwistBackEnd
         int socketId = messageHandler.wsCoordinator.AddWebSocket(webSocket);
         Console.WriteLine($"New WebSocket connection with id: {socketId}");
 
-        var buffer = new byte[1024 * 512];
-
         try
         {
             while (webSocket.State == WebSocketState.Open)
             {
                 WebSocketReceiveResult result;
-                try
+                using var ms = new MemoryStream();
+                var buffer = new byte[4 * 1024];
+
+                // Accumulate fragmented frames
+                do
                 {
                     result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
-                }
-                catch (WebSocketException ex)
-                {
-                    Console.WriteLine($"1.DEBUG: Exception for socket {socketId}: {ex}");
-                    break; // Exit loop on broken connection
-                }
 
-                if (result.CloseStatus.HasValue)
-                    break;
+                    if (result.CloseStatus.HasValue)
+                    {
+                        await webSocket.CloseAsync(result.CloseStatus.Value, result.CloseStatusDescription, CancellationToken.None);
+                        return;
+                    }
 
-                var receivedMessage = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                // Console.WriteLine($"Received msg from {socketId}");
-                messageHandler.HandleMessage(receivedMessage, socketId);
+                    ms.Write(buffer, 0, result.Count);
+                }
+                while (!result.EndOfMessage);
+
+                // Decode complete JSON text
+                ms.Seek(0, SeekOrigin.Begin);
+                string json = Encoding.UTF8.GetString(ms.ToArray());
+                messageHandler.HandleMessage(json, socketId);
             }
         }
         finally
         {
-            if (webSocket.State != WebSocketState.Closed)
-            {
-                try
-                {
-                    await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None);
-                }
-                catch (WebSocketException ex)
-                {
-                    Console.WriteLine($"2.DEBUG: Exception for socket {socketId}: {ex}");
-                }
-            }
 
-            messageHandler.wsCoordinator.RemoveWebSocket(socketId);
-            messageHandler.selections.RemoveClient(socketId);
-            Console.WriteLine($"WebSocket with id {socketId} closed");
+            try
+            {
+                if (webSocket.State != WebSocketState.Closed)
+                    await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None);
+            }
+            finally
+            {
+                messageHandler.wsCoordinator.RemoveWebSocket(socketId);
+                messageHandler.selections.RemoveClient(socketId);
+                Console.WriteLine($"WebSocket with id {socketId} closed");
+            }
         }
     }
 }
