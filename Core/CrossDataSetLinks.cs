@@ -24,7 +24,7 @@ public class CrossDataSetLinks {
     private Link[] links = [];
     private int _dataSetId = -1;
     private string linkOperator = "And";
-    private InMemorySqlite _sqlite;
+    private CrossDataSetSelections _sqlite;
     
     private bool _isUpdating = false;
     
@@ -37,7 +37,7 @@ public class CrossDataSetLinks {
     
     public CrossDataSetLinks(WebSocketCoordinator wsCoordinator) {
         _wsCoordinator = wsCoordinator;
-        _sqlite = new InMemorySqlite();
+        _sqlite = new CrossDataSetSelections();
     }
     
     public int newDataSetId()

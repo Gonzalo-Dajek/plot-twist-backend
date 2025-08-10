@@ -83,7 +83,7 @@ public static class PlotTwistBackEnd
                 // Decode complete JSON text
                 ms.Seek(0, SeekOrigin.Begin);
                 string json = Encoding.UTF8.GetString(ms.ToArray());
-                messageHandler.HandleMessage(json, socketId);
+                await messageHandler.HandleMessage(json, socketId);
             }
         }
         finally

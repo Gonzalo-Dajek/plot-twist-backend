@@ -74,51 +74,51 @@ public class ClientsSelections {
         }
     }
 
-    public async void updateCrossDataSetSelectionLimited()
-    {
-        if (_isUpdating)
-        {   
-            Console.WriteLine("AAAAAAAAAAAAAAAAA");
-            return;           // already working → drop this call
-        }
-
-        _isUpdating = true;
-
-        await Task.Run(() => {
-            var swUpdate = Stopwatch.StartNew();
-            try
-            {
-                selectionSet clientSelections = new selectionSet();
-                foreach (var (_, selection) in _selectionsPerClients)
-                {
-                    clientSelections.AddSelectionArr(selection.selectionPerDataSet);
-                }
-                var selectionPerDataset = clientSelections.ToArr();
-                foreach (var selection in selectionPerDataset!)
-                {
-                    _links.updateDataSetSelection(selection.dataSetName!, selection.indexesSelected!.ToList());
-                }
-            
-                _links.updateCrossDataSetSelection();
-            
-                var crossSelections = _links.getCrossSelections();
-
-                foreach (var (id, _) in _selectionsPerClients)
-                {
-                    Message msg = new Message();
-                    msg.type = "crossSelection";
-                    msg.dataSetCrossSelection = crossSelections.ToArray();
-                    _wsCoordinator.SendMessageToClient(msg, id, false).Wait();
-                }
-            }
-            finally
-            {
-                _isUpdating = false;
-            }
-            swUpdate.Stop();
-            Console.WriteLine($"took {swUpdate.ElapsedMilliseconds} ms"); 
-        });
-    }
+    // public async void updateCrossDataSetSelectionLimited()
+    // {
+    //     if (_isUpdating)
+    //     {   
+    //         Console.WriteLine("AAAAAAAAAAAAAAAAA");
+    //         return;           // already working → drop this call
+    //     }
+    //
+    //     _isUpdating = true;
+    //
+    //     await Task.Run(() => {
+    //         var swUpdate = Stopwatch.StartNew();
+    //         try
+    //         {
+    //             selectionSet clientSelections = new selectionSet();
+    //             foreach (var (_, selection) in _selectionsPerClients)
+    //             {
+    //                 clientSelections.AddSelectionArr(selection.selectionPerDataSet);
+    //             }
+    //             var selectionPerDataset = clientSelections.ToArr();
+    //             foreach (var selection in selectionPerDataset!)
+    //             {
+    //                 _links.updateDataSetSelection(selection.dataSetName!, selection.indexesSelected!.ToList());
+    //             }
+    //         
+    //             _links.updateCrossDataSetSelection();
+    //         
+    //             var crossSelections = _links.getCrossSelections();
+    //
+    //             foreach (var (id, _) in _selectionsPerClients)
+    //             {
+    //                 Message msg = new Message();
+    //                 msg.type = "crossSelection";
+    //                 msg.dataSetCrossSelection = crossSelections.ToArray();
+    //                 _wsCoordinator.SendMessageToClient(msg, id, false).Wait();
+    //             }
+    //         }
+    //         finally
+    //         {
+    //             _isUpdating = false;
+    //         }
+    //         swUpdate.Stop();
+    //         Console.WriteLine($"took {swUpdate.ElapsedMilliseconds} ms"); 
+    //     });
+    // }
     
     
     
@@ -129,12 +129,33 @@ public class ClientsSelections {
         {
             clientSelections.AddSelectionArr(selection.selectionPerDataSet);
         }
-        // var swSqlite = Stopwatch.StartNew();
-        // swSqlite.Stop();
-        // Console.WriteLine($"UpdateSelectionsFromTable took {swSqlite.ElapsedMilliseconds} ms");
+
         
         // TODO: HEREEEEEEEEEEEEEEEEEEEEEEEEEEEEEE ?? benchmark were performance goes
-        updateCrossDataSetSelectionLimited();
+        // updateCrossDataSetSelectionLimited();
+        var swSqlite = Stopwatch.StartNew();
+        {
+            var selectionPerDataset = clientSelections.ToArr();
+            foreach (var selection in selectionPerDataset!)
+            {
+                _links.updateDataSetSelection(selection.dataSetName!, selection.indexesSelected!.ToList());
+            }
+            
+            _links.updateCrossDataSetSelection();
+            
+            var crossSelections = _links.getCrossSelections();
+
+            foreach (var (id, _) in _selectionsPerClients)
+            {
+                Message msg = new Message();
+                msg.type = "crossSelection";
+                msg.dataSetCrossSelection = crossSelections.ToArray();
+                _wsCoordinator.SendMessageToClient(msg, id, false).Wait(); // TODO: here separate into separate methods
+            }
+        }
+        swSqlite.Stop();
+        Console.WriteLine($"UpdateSelectionsFromTable took {swSqlite.ElapsedMilliseconds} ms");
+
     
         // var crossSelections = _links.getCrossSelections();
         foreach (var (id, _) in _selectionsPerClients)

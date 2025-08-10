@@ -1,5 +1,7 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text.Json;
+using System.Threading.Channels;
 using plot_twist_back_end.Messages;
 
 namespace plot_twist_back_end.Core;
@@ -10,7 +12,7 @@ public class MessageHandler
     public CrossDataSetLinks links { get; }
     public WebSocketCoordinator wsCoordinator{ get; }
     public Benchmark benchmark;
-    
+    private readonly ConcurrentDictionary<int, Channel<Message>> _selectionChannels = new();
     private bool _isUpdating = false;
     
     public MessageHandler(
@@ -24,44 +26,135 @@ public class MessageHandler
         this.wsCoordinator = wsCoordinator;
         this.benchmark = benchmark;
     }
+    
 
-    public async void HandleMessage(string message, int socketId)
+    public async Task HandleMessage(string message, int socketId)
     {
-        var clientMessage = JsonSerializer.Deserialize<Message>(message);
-        string jsonString = JsonSerializer.Serialize(clientMessage, new JsonSerializerOptions { WriteIndented = true });
-        // Console.WriteLine("Message received: ");
-        // Console.WriteLine(jsonString);
-        // Console.WriteLine("--------------------------------------------------------------------");
-        
-        switch (clientMessage.type) {
-            case "link":
-                links.UpdateClientsLinks(clientMessage.links!, clientMessage.linksOperator!);
-                links.updateCrossDataSetSelection();
-                links.broadcastClientsLinks();
-                selections.ThrottledBroadcastClientsSelections(0);
-                break;
-            case "selection":
+    var clientMessage = JsonSerializer.Deserialize<Message>(message);
+
+    switch (clientMessage.type)
+    {
+        case "link":
+            links.UpdateClientsLinks(clientMessage.links!, clientMessage.linksOperator!);
+            links.updateCrossDataSetSelection();
+            links.broadcastClientsLinks();
+            selections.ThrottledBroadcastClientsSelections(0);
+            break;
+
+        case "selection":
+            // var timer = Stopwatch.StartNew();
+            // fast-path: write into bounded channel (capacity = 1, DropOldest)
+            if (_selectionChannels.TryGetValue(socketId, out var ch))
+            {
+                // TryWrite will succeed and if the channel is full it will drop the oldest item
+                ch.Writer.TryWrite(clientMessage);
+            }
+            else
+            {
+                // fallback: no channel (shouldn't normally happen) -> handle immediately
                 selections.UpdateClientSelection(socketId, clientMessage.clientsSelections![0]);
-                
                 links.updateCrossDataSetSelection();
                 selections.ThrottledBroadcastClientsSelections(0);
-                break;
-            case "addClient":
-                wsCoordinator.InitializeClient(socketId);
-                selections.AddClient(socketId);
-                links.broadcastClientsLinks();
+            }
+            // timer.Stop();
+            // Console.WriteLine($"selection took {timer.ElapsedMilliseconds} ms");
+            break;
+
+        case "addClient":
+            wsCoordinator.InitializeClient(socketId);
+            selections.AddClient(socketId);
+
+            // create per-socket bounded channel that keeps only latest message
+            var options = new BoundedChannelOptions(1)
+            {
+                SingleReader = true,
+                SingleWriter = false,
+                FullMode = BoundedChannelFullMode.DropOldest
+            };
+            var channel = Channel.CreateBounded<Message>(options);
+            _selectionChannels[socketId] = channel;
+
+            // Start the background processor (fire-and-forget, but observe exceptions)
+            _ = Task.Run(() => ProcessSelectionChannelAsync(socketId, channel.Reader));
+
+            links.broadcastClientsLinks();
+            selections.ThrottledBroadcastClientsSelections(0); // TODO: separate into broadcast selections and broadcast cross selections
+            break;
+
+        case "addDataSet":
+            links.AddDataset(clientMessage.dataSet![0]);
+            links.broadcastClientsLinks();
+            break;
+
+        case "BenchMark":
+            break;
+    }
+}
+
+    private async Task ProcessSelectionChannelAsync(int socketId, ChannelReader<Message> reader)
+    {
+        try
+        {
+            await foreach (var msg in reader.ReadAllAsync())
+            {
+                // Only runs for the last message(s) that survived the bounded buffer
+                selections.UpdateClientSelection(socketId, msg.clientsSelections![0]);
+                links.updateCrossDataSetSelection();
                 selections.ThrottledBroadcastClientsSelections(0);
-                break;
-            case "addDataSet":
-                links.AddDataset(clientMessage.dataSet![0]); // TODO: handle multiple
-                links.broadcastClientsLinks();
-                break;
-            case "BenchMark":
-                // HandleBenchmarkAction(clientMessage, socketId, benchmark, wsCoordinator, links, selections);
-                break;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Exception in selection processor for {socketId}: {ex}");
+        }
+    }
+
+    public void closeChannel(int socketId)
+    {
+        if (_selectionChannels.TryRemove(socketId, out var chToClose))
+        {
+            chToClose.Writer.TryComplete(); // stop the background reader
         }
     }
     
+    //
+    // public async void HandleMessage(string message, int socketId)
+    // {
+    //     var clientMessage = JsonSerializer.Deserialize<Message>(message);
+    //     string jsonString = JsonSerializer.Serialize(clientMessage, new JsonSerializerOptions { WriteIndented = true });
+    //     // Console.WriteLine("Message received: ");
+    //     // Console.WriteLine(jsonString);
+    //     // Console.WriteLine("--------------------------------------------------------------------");
+    //     
+    //     switch (clientMessage.type) {
+    //         case "link":
+    //             links.UpdateClientsLinks(clientMessage.links!, clientMessage.linksOperator!);
+    //             links.updateCrossDataSetSelection();
+    //             links.broadcastClientsLinks();
+    //             selections.ThrottledBroadcastClientsSelections(0);
+    //             break;
+    //         case "selection":
+    //             selections.UpdateClientSelection(socketId, clientMessage.clientsSelections![0]);
+    //             
+    //             links.updateCrossDataSetSelection();
+    //             selections.ThrottledBroadcastClientsSelections(0);
+    //             break;
+    //         case "addClient":
+    //             wsCoordinator.InitializeClient(socketId);
+    //             selections.AddClient(socketId);
+    //             links.broadcastClientsLinks();
+    //             selections.ThrottledBroadcastClientsSelections(0);
+    //             break;
+    //         case "addDataSet":
+    //             links.AddDataset(clientMessage.dataSet![0]); // TODO: handle multiple
+    //             links.broadcastClientsLinks();
+    //             break;
+    //         case "BenchMark":
+    //             // HandleBenchmarkAction(clientMessage, socketId, benchmark, wsCoordinator, links, selections);
+    //             break;
+    //     }
+    // }
+    //
     // private static void HandleBenchmarkAction(Message clientMessage, int socketId, Benchmark benchmark, WebSocketCoordinator wsc, CrossDataSetLinks lh, ClientsSelections bh)
     // {
     //     var serverResponse = new Message();
