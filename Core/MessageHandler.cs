@@ -30,66 +30,63 @@ public class MessageHandler
 
     public async Task HandleMessage(string message, int socketId)
     {
-    var clientMessage = JsonSerializer.Deserialize<Message>(message);
+        var clientMessage = JsonSerializer.Deserialize<Message>(message);
 
-    switch (clientMessage.type)
-    {
-        case "link":
-            links.UpdateClientsLinks(clientMessage.links!, clientMessage.linksOperator!);
-            links.updateCrossDataSetSelection();
-            links.broadcastClientsLinks();
-            selections.ThrottledBroadcastClientsSelections(0);
-            break;
-
-        case "selection":
-            // var timer = Stopwatch.StartNew();
-            // fast-path: write into bounded channel (capacity = 1, DropOldest)
-            if (_selectionChannels.TryGetValue(socketId, out var ch))
-            {
-                // TryWrite will succeed and if the channel is full it will drop the oldest item
-                ch.Writer.TryWrite(clientMessage);
-            }
-            else
-            {
-                // fallback: no channel (shouldn't normally happen) -> handle immediately
-                selections.UpdateClientSelection(socketId, clientMessage.clientsSelections![0]);
+        switch (clientMessage.type)
+        {
+            case "link":
+                links.UpdateClientsLinks(clientMessage.links!, clientMessage.linksOperator!);
                 links.updateCrossDataSetSelection();
+                links.broadcastClientsLinks();
                 selections.ThrottledBroadcastClientsSelections(0);
-            }
-            // timer.Stop();
-            // Console.WriteLine($"selection took {timer.ElapsedMilliseconds} ms");
-            break;
+                break;
 
-        case "addClient":
-            wsCoordinator.InitializeClient(socketId);
-            selections.AddClient(socketId);
+            case "selection":
+                // fast-path: write into bounded channel (capacity = 1, DropOldest)
+                if (_selectionChannels.TryGetValue(socketId, out var ch))
+                {
+                    // TryWrite will succeed and if the channel is full it will drop the oldest item
+                    ch.Writer.TryWrite(clientMessage);
+                }
+                else
+                {
+                    // fallback
+                    selections.UpdateClientSelection(socketId, clientMessage.clientsSelections![0]);
+                    links.updateCrossDataSetSelection();
+                    selections.ThrottledBroadcastClientsSelections(0);
+                }
+                break;
 
-            // create per-socket bounded channel that keeps only latest message
-            var options = new BoundedChannelOptions(1)
-            {
-                SingleReader = true,
-                SingleWriter = false,
-                FullMode = BoundedChannelFullMode.DropOldest
-            };
-            var channel = Channel.CreateBounded<Message>(options);
-            _selectionChannels[socketId] = channel;
+            case "addClient":
+                wsCoordinator.InitializeClient(socketId);
+                selections.AddClient(socketId);
 
-            // Start the background processor (fire-and-forget, but observe exceptions)
-            _ = Task.Run(() => ProcessSelectionChannelAsync(socketId, channel.Reader));
+                // create per-socket bounded channel that keeps only latest message
+                var options = new BoundedChannelOptions(1)
+                {
+                    SingleReader = true,
+                    SingleWriter = false,
+                    FullMode = BoundedChannelFullMode.DropOldest
+                };
+                var channel = Channel.CreateBounded<Message>(options);
+                _selectionChannels[socketId] = channel;
 
-            links.broadcastClientsLinks();
-            selections.ThrottledBroadcastClientsSelections(0); // TODO: separate into broadcast selections and broadcast cross selections
-            break;
+                // Start the background processor (fire-and-forget, but observe exceptions)
+                _ = Task.Run(() => ProcessSelectionChannelAsync(socketId, channel.Reader));
 
-        case "addDataSet":
-            links.AddDataset(clientMessage.dataSet![0]);
-            links.broadcastClientsLinks();
-            break;
+                links.broadcastClientsLinks();
+                selections.ThrottledBroadcastClientsSelections(0); // TODO: separate into broadcast selections and broadcast cross selections
+                break;
 
-        case "BenchMark":
-            break;
+            case "addDataSet":
+                links.AddDataset(clientMessage.dataSet![0]);
+                links.broadcastClientsLinks();
+                break;
+
+            case "BenchMark":
+                break;
+        }
     }
-}
 
     private async Task ProcessSelectionChannelAsync(int socketId, ChannelReader<Message> reader)
     {

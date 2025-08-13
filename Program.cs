@@ -65,20 +65,28 @@ public static class PlotTwistBackEnd
                 using var ms = new MemoryStream();
                 var buffer = new byte[4 * 1024];
 
-                // Accumulate fragmented frames
-                do
+                try
                 {
-                    result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
-
-                    if (result.CloseStatus.HasValue)
+                    // Accumulate fragmented frames
+                    do
                     {
-                        await webSocket.CloseAsync(result.CloseStatus.Value, result.CloseStatusDescription, CancellationToken.None);
-                        return;
-                    }
+                        result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
 
-                    ms.Write(buffer, 0, result.Count);
+                        if (result.CloseStatus.HasValue)
+                        {
+                            await webSocket.CloseAsync(result.CloseStatus.Value, result.CloseStatusDescription, CancellationToken.None);
+                            return;
+                        }
+
+                        ms.Write(buffer, 0, result.Count);
+                    }
+                    while (!result.EndOfMessage);
                 }
-                while (!result.EndOfMessage);
+                catch (WebSocketException)
+                {
+                    // Client disconnected unexpectedly — just break the loop
+                    break;
+                }
 
                 // Decode complete JSON text
                 ms.Seek(0, SeekOrigin.Begin);
@@ -88,11 +96,14 @@ public static class PlotTwistBackEnd
         }
         finally
         {
-
             try
             {
-                if (webSocket.State != WebSocketState.Closed)
+                if (webSocket.State != WebSocketState.Closed && webSocket.State != WebSocketState.Aborted)
                     await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None);
+            }
+            catch (WebSocketException)
+            {
+                Console.WriteLine($"Connection {socketId} closed unexpectedly.");
             }
             finally
             {
@@ -101,5 +112,6 @@ public static class PlotTwistBackEnd
                 Console.WriteLine($"WebSocket with id {socketId} closed");
             }
         }
+
     }
 }

@@ -24,20 +24,17 @@ public class CrossDataSetLinks {
     private Link[] links = [];
     private int _dataSetId = -1;
     private string linkOperator = "And";
-    private CrossDataSetSelections _sqlite;
+    private CrossDataSetSelections crossDataSetSelections;
     
     private bool _isUpdating = false;
     
     // DataSetTo -> (DataSetFrom -> indexSelected)
     private Dictionary<string, Dictionary<string, List<bool>>> _crossDataSetSelections =
         new Dictionary<string, Dictionary<string, List<bool>>>();
-    
-    private readonly Dictionary<string, CancellationTokenSource> _debounceTokens = new();
-    private readonly object _debounceLock = new();
-    
+
     public CrossDataSetLinks(WebSocketCoordinator wsCoordinator) {
         _wsCoordinator = wsCoordinator;
-        _sqlite = new CrossDataSetSelections();
+        crossDataSetSelections = new CrossDataSetSelections();
     }
     
     public int newDataSetId()
@@ -54,38 +51,14 @@ public class CrossDataSetLinks {
         dataset.dataSetColorIndex = this.newDataSetId();
         _dataSets.Add(dataset);
         _datasetNames.Add(dataset.name);
-        _sqlite.AddDataset(dataset);
-
-        // if(dataset.name != "temperaturasCABA.csv") return;
-        // List<bool> selections = new List<bool> { false, false, false, true, false, false, true };
-        // _sqlite.UpdateSelectionsFromTable("temperaturasBsAs.csv", selections);
-        // selections = new List<bool> { true, false, false, false, false };
-        // _sqlite.UpdateSelectionsFromTable("temperaturasCABA.csv", selections);
-        // if (_sqlite.TryEvaluateMatches("temperaturasBsAs.csv", "temperaturasCABA.csv", "SQRT(POWER(X.Lat - Y.lat, 2) + POWER(X.Long - Y.long, 2)) <= 5", out var res))
-        // {
-        //     Console.WriteLine(res);
-        // };
-        // if (_sqlite.TryEvaluateMatchesBidirectional("temperaturasBsAs.csv", "temperaturasCABA.csv", "SQRT(POWER(X.Lat - Y.lat, 2) + POWER(X.Long - Y.long, 2)) <= 5", out var res2, out var res3))
-        // {
-        //     Console.WriteLine(res2);
-        //     Console.WriteLine(res3);
-        // };
+        crossDataSetSelections.AddDataset(dataset);
     }
 
-    public async void updateDataSetSelection(string datasetName, List<bool> selected)
+    public void updateDataSetSelection(string datasetName, List<bool> selected)
     {
-        _sqlite.UpdateSelectionsFromTable(datasetName, selected.ToList());
-        // _sqlite.UpdateSelectionsFromTable(datasetName, selected.ToList());
-        // updateCrossDataSetSelection();
+        crossDataSetSelections.UpdateSelectionsFromTable(datasetName, selected.ToList());
     }
-
     
-    // _sqlite.TryEvaluateMatches("temperaturasBsAs.csv",
-    // "temperaturasCABA.csv",
-    // "SQRT(POWER(X.Lat - Y.lat, 2) + POWER(X.Long - Y.long, 2)) <= 5",
-    // out var res)
-    
-    // TODO: check
 
     public List<DataSetSelectionById> getCrossSelections()
     {
@@ -127,7 +100,7 @@ public class CrossDataSetLinks {
 
         return result;
     }
-    // TODO: check
+
     public List<DataSetSelection> BuildCrossSelections()
     {
         var result = new List<DataSetSelection>(_crossDataSetSelections.Count);
@@ -140,7 +113,7 @@ public class CrossDataSetLinks {
             // determine length (all inner lists are same size)
             int length = fromDict.Count > 0 
                 ? fromDict.Values.First().Count 
-                : 0; // TODO: here
+                : 0;
 
             var selectedBy = new List<List<string>>(length);
 
@@ -201,7 +174,7 @@ public class CrossDataSetLinks {
             {
                 List<bool> newSelected;
                 previousSelected = entrySelectedByPerDataSet[to][from];
-                if (_sqlite.TryEvaluateMatches(from, to, predicate, out newSelected))
+                if (crossDataSetSelections.TryEvaluateMatches(from, to, predicate, out newSelected))
                 {
                     entrySelectedByPerDataSet[to][from] = combineBoolLists(previousSelected, newSelected, linkOperator);
                     link.isError = false;
@@ -215,7 +188,7 @@ public class CrossDataSetLinks {
             {
                 List<bool> newSelectedFrom;
                 List<bool> newSelectedTo;
-                if (_sqlite.TryEvaluateMatchesBidirectional(from, to, predicate, out newSelectedTo, out newSelectedFrom))
+                if (crossDataSetSelections.TryEvaluateMatchesBidirectional(from, to, predicate, out newSelectedTo, out newSelectedFrom))
                 {
                     List <bool> previousSelectedTo = entrySelectedByPerDataSet[to][from];
                     List <bool> previousSelectedFrom = entrySelectedByPerDataSet[from][to];

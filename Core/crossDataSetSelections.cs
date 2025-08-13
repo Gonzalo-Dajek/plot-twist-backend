@@ -551,16 +551,20 @@ public class CrossDataSetSelections
         var localLogs = new ThreadLocal<List<string>>(() => new List<string>(), true);
         var po = new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount) };
 
-        // For each selected A -> selArr
-        if (aSelectedInstances.Length > 0 && bSelectedInstances.Length > 0)
+        var aAllInstances = Enumerable.Range(0, aCount)
+            .Select(i => CreateTypedInstance(typeA, tA, i))
+            .ToArray();
+
+        // run across all A
+        if (aCount > 0 && bSelectedInstances.Length > 0)
         {
-            Parallel.ForEach(Partitioner.Create(0, aSelectedInstances.Length), po, range =>
+            Parallel.ForEach(Partitioner.Create(0, aCount), po, range =>
             {
                 var buf = localLogs.Value;
                 for (int k = range.Item1; k < range.Item2; k++)
                 {
-                    int ia = selectedAIndices[k];
-                    var xInst = aSelectedInstances[k];
+                    int ia = k;
+                    var xInst = aAllInstances[k];
                     bool matched = false;
 
                     for (int jbIdx = 0; jbIdx < bSelectedInstances.Length; jbIdx++)
