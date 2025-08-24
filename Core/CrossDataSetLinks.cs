@@ -245,7 +245,7 @@ public class CrossDataSetLinks {
         this.linkOperator = newLinkOperator;
     }
 
-    public async void broadcastClientsLinks() {
+    public async void broadcastClientsLinks(int clientId = 0) {
         Message msg = new Message();
         msg.type = "link";
         msg.dataSet = this._dataSets.ToArray();

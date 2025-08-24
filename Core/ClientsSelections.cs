@@ -99,7 +99,7 @@ public class ClientsSelections {
                 Message msg = new Message();
                 msg.type = "crossSelection";
                 msg.dataSetCrossSelection = crossSelections.ToArray();
-                _wsCoordinator.SendMessageToClient(msg, id, false).Wait(); // TODO: here separate into separate methods
+                _wsCoordinator.SendMessageToClient(msg, id, false).Wait();
             }
         }
         timer.Stop();

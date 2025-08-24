@@ -37,7 +37,8 @@ public class MessageHandler
             case "link":
                 links.UpdateClientsLinks(clientMessage.links!, clientMessage.linksOperator!);
                 links.updateCrossDataSetSelection();
-                links.broadcastClientsLinks();
+                // links.broadcastClientsLinks(socketId);
+                links.broadcastClientsLinks(socketId);
                 selections.ThrottledBroadcastClientsSelections(0);
                 break;
 

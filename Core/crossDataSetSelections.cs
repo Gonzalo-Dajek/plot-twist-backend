@@ -1,32 +1,19 @@
-
+using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Reflection.Emit;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
 using DynamicExpresso;
 using plot_twist_back_end.Messages;
 
-// Simple in-memory table: name, column names, and rows (each row is a dictionary column->value).
-public class InMemoryTable
-{
-    public string Name { get; }
-    public string[] Columns { get; }
-    public List<Dictionary<string, object?>> Rows { get; } = new();
-
-    public InMemoryTable(string name, string[] columns)
-    {
-        Name = name;
-        Columns = columns;
-    }
-}
-
-// CrossDataSetSelections: stores InMemoryTable instances, generates runtime POCO types
-// that match each table schema (double/string + bool isSelected), compiles predicates with
-// DynamicExpresso and evaluates matches between tables.
 public class CrossDataSetSelections
 {
     private readonly object _lock = new();
@@ -44,6 +31,26 @@ public class CrossDataSetSelections
     // single dynamic module for runtime types
     private readonly ModuleBuilder _moduleBuilder;
 
+    // existing parallelism toggle
+    private bool _useParallelEvaluation = true;
+
+    // NEW: independent precompute toggle (controls whether precompute runs at all)
+    private bool _usePrecompute = true;
+
+    // --- Match precompute cache (LRU capped) ---
+    private readonly int _matchCacheCapacity = 20;
+    private readonly LinkedList<(string Key, MatchCacheValue Value)> _matchCacheLru = new();
+    private readonly Dictionary<string, LinkedListNode<(string Key, MatchCacheValue Value)>> _matchCacheMap
+        = new(StringComparer.Ordinal);
+
+    private static void Log(string msg,
+        [CallerMemberName] string member = "",
+        [CallerFilePath] string file = "",
+        [CallerLineNumber] int line = 0)
+    {
+        // Console.WriteLine($"[{Path.GetFileName(file)}:{line} {member}] {msg}");
+    }
+
     public CrossDataSetSelections()
     {
         var asmName = new AssemblyName("RuntimeTableTypes_" + Guid.NewGuid().ToString("N"));
@@ -51,14 +58,78 @@ public class CrossDataSetSelections
         _moduleBuilder = asm.DefineDynamicModule(asmName.Name!);
         Log($"ctor: module {_moduleBuilder.ScopeName}");
     }
-    
-    // logging helper that includes file, member and line number
-    private static void Log(string msg,
-        [CallerMemberName] string member = "",
-        [CallerFilePath] string file = "",
-        [CallerLineNumber] int line = 0)
+
+    // Match cache value: always has BToA, AToB is optional (null if not computed)
+    private class MatchCacheValue
     {
-        // Console.WriteLine($"[{Path.GetFileName(file)}:{line} {member}] {msg}");
+        public List<int>[] BToA { get; }
+        public List<int>[]? AToB { get; set; }
+        public int ACount { get; }
+        public int BCount { get; }
+        public DateTime CreatedUtc { get; } = DateTime.UtcNow;
+        public bool HasAToB => AToB != null;
+
+        public MatchCacheValue(int aCount, int bCount, bool computeAToB)
+        {
+            ACount = aCount;
+            BCount = bCount;
+            BToA = new List<int>[bCount];
+            for (int j = 0; j < bCount; j++) BToA[j] = new List<int>();
+
+            if (computeAToB)
+            {
+                AToB = new List<int>[aCount];
+                for (int i = 0; i < aCount; i++) AToB[i] = new List<int>();
+            }
+            else
+            {
+                AToB = null;
+            }
+        }
+    }
+
+    private static string MakeMatchCacheKey(string tableA, string tableB, string predicate)
+    {
+        return tableA + "|" + tableB + "|" + predicate;
+    }
+
+    private bool TryGetCachedMatches(string key, out MatchCacheValue? value)
+    {
+        lock (_lock)
+        {
+            if (_matchCacheMap.TryGetValue(key, out var node))
+            {
+                _matchCacheLru.Remove(node);
+                _matchCacheLru.AddFirst(node);
+                value = node.Value.Value;
+                return true;
+            }
+            value = null;
+            return false;
+        }
+    }
+
+    private void AddCachedMatches(string key, MatchCacheValue value)
+    {
+        lock (_lock)
+        {
+            if (_matchCacheMap.TryGetValue(key, out var existing))
+            {
+                _matchCacheLru.Remove(existing);
+                _matchCacheMap.Remove(key);
+            }
+
+            var node = new LinkedListNode<(string, MatchCacheValue)>((key, value));
+            _matchCacheLru.AddFirst(node);
+            _matchCacheMap[key] = node;
+
+            if (_matchCacheMap.Count > _matchCacheCapacity)
+            {
+                var last = _matchCacheLru.Last!;
+                _matchCacheMap.Remove(last.Value.Key);
+                _matchCacheLru.RemoveLast();
+            }
+        }
     }
 
     // Convert JsonElement to CLR value. Numbers -> double, strings -> string, true/false -> bool, null -> null.
@@ -86,7 +157,6 @@ public class CrossDataSetSelections
             if (v is null) continue;
 
             var t = v.GetType();
-            // handle boxed numeric types
             if (t == typeof(double) || t == typeof(float) || t == typeof(decimal)
                 || t == typeof(int) || t == typeof(long) || t == typeof(short)
                 || t == typeof(byte) || t == typeof(uint) || t == typeof(ulong) || t == typeof(ushort))
@@ -94,7 +164,6 @@ public class CrossDataSetSelections
                 return typeof(double);
             }
 
-            // handle numeric strings
             if (v is string s)
             {
                 s = s.Trim();
@@ -111,15 +180,11 @@ public class CrossDataSetSelections
         return typeof(string);
     }
 
-    // Helper that emits a private field and simple get/set methods for a property on `tb`.
-    // propertyName is used as-is (we don't sanitize), but we ensure uniqueness when generating.
     private static void CreateAutoProperty(TypeBuilder tb, string propertyName, Type propType)
     {
-        // define a backing field
         var field = tb.DefineField("_" + propertyName, propType, FieldAttributes.Private);
         var prop = tb.DefineProperty(propertyName, PropertyAttributes.None, propType, Type.EmptyTypes);
 
-        // getter
         var get = tb.DefineMethod("get_" + propertyName,
             MethodAttributes.Public | MethodAttributes.HideBySig | MethodAttributes.SpecialName,
             propType, Type.EmptyTypes);
@@ -128,7 +193,6 @@ public class CrossDataSetSelections
         ig.Emit(OpCodes.Ldfld, field);
         ig.Emit(OpCodes.Ret);
 
-        // setter
         var set = tb.DefineMethod("set_" + propertyName,
             MethodAttributes.Public | MethodAttributes.HideBySig | MethodAttributes.SpecialName,
             typeof(void), new[] { propType });
@@ -142,23 +206,14 @@ public class CrossDataSetSelections
         prop.SetSetMethod(set);
     }
 
-    // Create or reuse a CLR type that matches the table's inferred schema.
-    // Steps:
-    //  - collect values for each column (and synthetic originalIndexPosition/isSelected)
-    //  - infer types (double|string, isSelected=bool)
-    //  - build deterministic signature (sorted keys)
-    //  - generate runtime type if missing, cache type and property map
     private Type GetOrCreateTypeForTable(InMemoryTable table)
     {
-        // gather column values (case-insensitive keys)
         var columnValues = new Dictionary<string, List<object?>>(StringComparer.OrdinalIgnoreCase);
         foreach (var c in table.Columns) columnValues[c] = new List<object?>();
 
-        // ensure synthetic columns
         foreach (var synth in new[] { "originalIndexPosition", "isSelected" })
             if (!columnValues.ContainsKey(synth)) columnValues[synth] = new List<object?>();
 
-        // populate values row-by-row
         foreach (var row in table.Rows)
         {
             foreach (var k in columnValues.Keys.ToList())
@@ -168,7 +223,6 @@ public class CrossDataSetSelections
             }
         }
 
-        // infer types; keep isSelected as bool explicitly
         var inferred = new Dictionary<string, Type>(StringComparer.OrdinalIgnoreCase);
         foreach (var kv in columnValues)
         {
@@ -178,32 +232,27 @@ public class CrossDataSetSelections
                 inferred[kv.Key] = InferColumnType(kv.Value);
         }
 
-        // deterministic signature: sort by column name
         var signature = table.Name + ":" + string.Join(",", inferred.OrderBy(kv => kv.Key).Select(kv => kv.Key + "=" + kv.Value.FullName));
 
-        // return cached type if exists
         if (_typeCache.TryGetValue(signature, out var cached)) return cached;
 
         lock (_lock)
         {
             if (_typeCache.TryGetValue(signature, out cached)) return cached;
 
-            // create a unique type name
             var typeName = "RtTable_" + Guid.NewGuid().ToString("N");
             var tb = _moduleBuilder.DefineType(typeName, TypeAttributes.Public | TypeAttributes.Class | TypeAttributes.Sealed);
 
             var propMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            // iterate in sorted order for deterministic property order
             foreach (var kv in inferred.OrderBy(kv => kv.Key))
             {
                 var orig = kv.Key;
 
-                // use original column name as property name (no sanitization)
-                var propName = orig;
+                // Replace spaces with underscores for property names
+                var propName = orig.Replace(' ', '_');
 
-                // ensure uniqueness if duplicate column names appear (append suffix)
                 var baseName = propName;
                 int suffix = 1;
                 while (!used.Add(propName))
@@ -219,7 +268,6 @@ public class CrossDataSetSelections
             _typeCache[signature] = genType;
             _propMaps[genType.FullName!] = propMap;
 
-            // store column types for inspection
             _columnTypeMap[table.Name] = inferred.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase);
 
             Log($"Created runtime type {genType.FullName} for table '{table.Name}' with cols: {string.Join(",", inferred.Keys)}");
@@ -227,8 +275,6 @@ public class CrossDataSetSelections
         }
     }
 
-    // Add a DataSetInfo; convert JsonElements into CLR values and store rows.
-    // table is static except for isSelected toggles as you indicated.
     public void AddDataset(DataSetInfo dataset)
     {
         lock (_lock)
@@ -259,7 +305,6 @@ public class CrossDataSetSelections
             _tables[dataset.name] = table;
             Log($"AddDataset: added '{dataset.name}' rows={table.Rows.Count}");
 
-            // create runtime type now so we can inspect inferred types and prop maps; log the PrintTable output
             try
             {
                 var _ = GetOrCreateTypeForTable(table);
@@ -273,7 +318,6 @@ public class CrossDataSetSelections
         }
     }
 
-    // Update per-row isSelected flags using originalIndexPosition when present, otherwise by row index.
     public void UpdateSelectionsFromTable(string tableName, List<bool> selections)
     {
         if (!_tables.TryGetValue(tableName, out var table))
@@ -284,7 +328,7 @@ public class CrossDataSetSelections
             var row = table.Rows[i];
             if (row.TryGetValue("originalIndexPosition", out var idxObj) && idxObj is int originalIdx)
             {
-                row["isSelected"] = (originalIdx >= 0 && originalIdx < selections.Count) ? selections[originalIdx] : false;
+                row["isSelected"] = (originalIdx >= 0 && originalIdx < selections.Count) && selections[originalIdx];
             }
             else
             {
@@ -294,8 +338,7 @@ public class CrossDataSetSelections
 
         Log($"UpdateSelectionsFromTable: updated '{tableName}' with {selections.Count} selection flags");
     }
-    
-    // invoker
+
     private Func<object, object, bool> CreateInvoker(Delegate del)
     {
         var invokeMi = del.GetType().GetMethod("Invoke")
@@ -321,8 +364,7 @@ public class CrossDataSetSelections
         var lambdaExp = Expression.Lambda<Func<object, object, bool>>(body, pa, pb);
         return lambdaExp.Compile();
     }
-    
-    // compile safely to Delegate?
+
     private Delegate? TryCompileLambda(object lambdaObj, Type aType, Type bType, out string? err)
     {
         err = null;
@@ -363,7 +405,6 @@ public class CrossDataSetSelections
                 }
             }
 
-            // ✅ Correctly validate the delegate's public signature
             var invokeMi = del.GetType().GetMethod("Invoke")
                 ?? throw new InvalidOperationException("Delegate has no Invoke method");
             var invokeParams = invokeMi.GetParameters();
@@ -386,13 +427,115 @@ public class CrossDataSetSelections
             return null;
         }
     }
-    
-    // TryEvaluateMatches: for each B row return whether any selected A row satisfies predicate(X,Y).
-    // predicateString expected in "X.ColumnA < Y.ColumnB" style (no quoting).
+
+    private List<string> RunIndexedLoop(int count, Action<int, List<string>> body)
+    {
+        if (count <= 0) return new List<string>();
+
+        if (_useParallelEvaluation)
+        {
+            var localLogs = new ThreadLocal<List<string>>(() => new List<string>(), true);
+            var po = new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount) };
+
+            Parallel.ForEach(Partitioner.Create(0, count), po, range =>
+            {
+                var buf = localLogs.Value;
+                for (int i = range.Item1; i < range.Item2; i++)
+                    body(i, buf);
+            });
+
+            var merged = new List<string>();
+            foreach (var l in localLogs.Values) merged.AddRange(l);
+            localLogs.Dispose();
+            return merged;
+        }
+        else
+        {
+            var seqLogs = new List<string>();
+            for (int i = 0; i < count; i++)
+                body(i, seqLogs);
+            return seqLogs;
+        }
+    }
+
+    // Precompute matches B->A and optionally A->B (tryBidirectional)
+    private MatchCacheValue? PrecomputeMatches(Type typeA, Type typeB, InMemoryTable tA, InMemoryTable tB, string predicate, bool tryBidirectional, out string? error)
+    {
+        error = null;
+
+        // GLOBAL precompute gate: if disabled, bail early
+        if (!_usePrecompute)
+        {
+            error = "Precompute disabled by runtime flag";
+            return null;
+        }
+
+        try
+        {
+            var lambda = CompilePredicate(typeA, typeB, predicate, out string? compileErr);
+            if (lambda == null) { error = compileErr; return null; }
+
+            var compiledDelegate = TryCompileLambda(lambda, typeA, typeB, out string? compileError);
+            if (compiledDelegate == null) { error = compileError; return null; }
+
+            var evalFunc = CreateInvoker(compiledDelegate);
+
+            int aCount = tA.Rows.Count;
+            int bCount = tB.Rows.Count;
+
+            var cacheVal = new MatchCacheValue(aCount, bCount, computeAToB: tryBidirectional);
+
+            // create typed instances once
+            var aInstances = new object[aCount];
+            for (int i = 0; i < aCount; i++) aInstances[i] = CreateTypedInstance(typeA, tA, i);
+            var bInstances = new object[bCount];
+            for (int j = 0; j < bCount; j++) bInstances[j] = CreateTypedInstance(typeB, tB, j);
+
+            var logs = RunIndexedLoop(bCount, (jb, buf) =>
+            {
+                var yInst = bInstances[jb];
+                var list = new List<int>();
+                for (int ia = 0; ia < aCount; ia++)
+                {
+                    try
+                    {
+                        if (evalFunc(aInstances[ia], yInst))
+                            list.Add(ia);
+                    }
+                    catch (Exception ex)
+                    {
+                        buf.Add($"Precompute exception A#{ia} B#{jb}: {ex.GetType().Name} {ex.Message}");
+                    }
+                }
+                cacheVal.BToA[jb] = list;
+            });
+
+            foreach (var msg in logs) Log(msg);
+
+            if (tryBidirectional)
+            {
+                for (int jb = 0; jb < bCount; jb++)
+                {
+                    var list = cacheVal.BToA[jb];
+                    foreach (var ia in list)
+                    {
+                        cacheVal.AToB![ia].Add(jb);
+                    }
+                }
+            }
+
+            return cacheVal;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return null;
+        }
+    }
+
     public bool TryEvaluateMatches(string tableA, string tableB, string predicateString, out List<bool> result)
     {
         result = new List<bool>();
-
         if (!_tables.TryGetValue(tableA, out var tA) || !_tables.TryGetValue(tableB, out var tB))
         {
             Log($"TryEvaluateMatches: missing table(s) '{tableA}' or '{tableB}'");
@@ -408,48 +551,78 @@ public class CrossDataSetSelections
             return false;
         }
 
-        Log($"TryEvaluateMatches: compiling predicate '{predicateString}' for A='{tableA}' B='{tableB}'");
-        var lambda = CompilePredicate(typeA, typeB, predicateString, out string? compileErr);
-        if (lambda == null)
+        var key = MakeMatchCacheKey(tableA, tableB, predicateString);
+
+        MatchCacheValue? cacheEntry = null;
+        // Precompute happens only if both the per-call flag and the global flag are true
+        if (_usePrecompute)
         {
-            Log($"Predicate compile failed: {compileErr}");
-            return false;
-        }
-        
-        Delegate? compiledDelegate = TryCompileLambda(lambda, typeA, typeB, out string? compileError);
-        if (compiledDelegate is null)
-        {
-            Log($"Predicate compile failed: {compileError}");
-            return false;
+            if (!TryGetCachedMatches(key, out cacheEntry))
+            {
+                Log($"TryEvaluateMatches: precomputing matches for key {key}");
+                var pre = PrecomputeMatches(typeA, typeB, tA, tB, predicateString, tryBidirectional: false, out string? preErr);
+                if (pre == null)
+                {
+                    Log($"Precompute failed: {preErr}");
+                    return false;
+                }
+                AddCachedMatches(key, pre);
+                cacheEntry = pre;
+            }
         }
 
-        var evalFunc = CreateInvoker(compiledDelegate!);
+        // selected A boolean map (fast lookup)
+        var selectedA = new bool[tA.Rows.Count];
+        for (int i = 0; i < tA.Rows.Count; i++)
+        {
+            if (tA.Rows[i].TryGetValue("isSelected", out var s) && s is bool sb && sb) selectedA[i] = true;
+        }
 
         int bCount = tB.Rows.Count;
-
-        var selectedAIndices = Enumerable.Range(0, tA.Rows.Count)
-            .Where(i => tA.Rows[i].TryGetValue("isSelected", out var s) && s is bool sb && sb)
-            .ToArray();
-
-        var aSelectedInstances = selectedAIndices
-            .Select(i => CreateTypedInstance(typeA, tA, i))
-            .ToArray();
-
-        var bInstances = new object[bCount];
-        for (int i = 0; i < bCount; i++)
-            bInstances[i] = CreateTypedInstance(typeB, tB, i);
-
-        Log($"TryEvaluateMatches: selected A rows count = {selectedAIndices.Length}, B rows = {bCount}");
-
         var output = new bool[bCount];
 
-        var localLogs = new ThreadLocal<List<string>>(() => new List<string>(), true);
-        var po = new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount) };
-
-        Parallel.ForEach(Partitioner.Create(0, bCount), po, range =>
+        if (_usePrecompute && cacheEntry != null)
         {
-            var buf = localLogs.Value;
-            for (int ib = range.Item1; ib < range.Item2; ib++)
+            // use cached B->A lists; loop B (parallel or not via helper)
+            RunIndexedLoop(bCount, (ib, buf) =>
+            {
+                var matches = cacheEntry.BToA[ib];
+                bool has = false;
+                for (int k = 0; k < matches.Count; k++)
+                {
+                    if (selectedA[matches[k]]) { has = true; break; }
+                }
+                output[ib] = has;
+            });
+
+            result = output.ToList();
+            Log($"TryEvaluateMatches: finished using precompute, result count={result.Count}");
+            return true;
+        }
+        else
+        {
+            Log($"TryEvaluateMatches: compiling predicate '{predicateString}' for A='{tableA}' B='{tableB}'");
+            var lambda = CompilePredicate(typeA, typeB, predicateString, out string? compileErr);
+            if (lambda == null) { Log($"Predicate compile failed: {compileErr}"); return false; }
+
+            Delegate? compiledDelegate = TryCompileLambda(lambda, typeA, typeB, out string? compileError);
+            if (compiledDelegate is null) { Log($"Predicate compile failed: {compileError}"); return false; }
+
+            var evalFunc = CreateInvoker(compiledDelegate!);
+
+            var selectedAIndices = Enumerable.Range(0, tA.Rows.Count)
+                .Where(i => tA.Rows[i].TryGetValue("isSelected", out var s) && s is bool sb && sb)
+                .ToArray();
+
+            var aSelectedInstances = selectedAIndices
+                .Select(i => CreateTypedInstance(typeA, tA, i))
+                .ToArray();
+
+            var bInstances = new object[bCount];
+            for (int i = 0; i < bCount; i++)
+                bInstances[i] = CreateTypedInstance(typeB, tB, i);
+
+            var logs = RunIndexedLoop(bCount, (ib, buf) =>
             {
                 var yInst = bInstances[ib];
                 bool hasMatch = false;
@@ -474,21 +647,16 @@ public class CrossDataSetSelections
                 }
 
                 output[ib] = hasMatch;
-            }
-        });
+            });
 
-        // flush logs in arbitrary but safe order
-        foreach (var l in localLogs.Values)
-            foreach (var msg in l)
-                Log(msg);
-        localLogs.Dispose();
+            foreach (var msg in logs) Log(msg);
 
-        result = output.ToList();
-        Log($"TryEvaluateMatches: finished, result count={result.Count}");
-        return true;
+            result = output.ToList();
+            Log($"TryEvaluateMatches: finished, result count={result.Count}");
+            return true;
+        }
     }
 
-    // Bidirectional evaluation: result for B rows, selectedFrom for A rows.
     public bool TryEvaluateMatchesBidirectional(
         string tableA,
         string tableB,
@@ -508,22 +676,46 @@ public class CrossDataSetSelections
         var typeA = GetOrCreateTypeForTable(tA);
         var typeB = GetOrCreateTypeForTable(tB);
 
-        Log($"TryEvaluateMatchesBidirectional: compiling predicate '{predicateString}'");
-        var lambda = CompilePredicate(typeA, typeB, predicateString, out string? compileErr);
-        if (lambda == null)
+        var key = MakeMatchCacheKey(tableA, tableB, predicateString);
+
+        MatchCacheValue? cacheEntry = null;
+        if (_usePrecompute)
         {
-            Log($"Predicate compile failed: {compileErr}");
-            return false;
+            if (!TryGetCachedMatches(key, out cacheEntry))
+            {
+                Log($"TryEvaluateMatchesBidirectional: precomputing matches for key {key}");
+                var pre = PrecomputeMatches(typeA, typeB, tA, tB, predicateString, tryBidirectional: true, out string? preErr);
+                if (pre == null)
+                {
+                    Log($"Precompute failed: {preErr}");
+                    return false;
+                }
+                AddCachedMatches(key, pre);
+                cacheEntry = pre;
+            }
+            else
+            {
+                // If cache exists but lacks AToB, derive it from BToA under lock and update cache
+                if (!cacheEntry.HasAToB)
+                {
+                    lock (_lock)
+                    {
+                        if (!cacheEntry.HasAToB)
+                        {
+                            cacheEntry.AToB = new List<int>[cacheEntry.ACount];
+                            for (int i = 0; i < cacheEntry.ACount; i++) cacheEntry.AToB[i] = new List<int>();
+
+                            for (int jb = 0; jb < cacheEntry.BCount; jb++)
+                            {
+                                var list = cacheEntry.BToA[jb];
+                                foreach (var ia in list)
+                                    cacheEntry.AToB[ia].Add(jb);
+                            }
+                        }
+                    }
+                }
+            }
         }
-        
-        Delegate? compiledDelegate = TryCompileLambda(lambda, typeA, typeB, out string? compileError);
-        if (compiledDelegate is null)
-        {
-            Log($"Predicate compile failed: {compileError}");
-            return false;
-        }
-        
-        var evalFunc = CreateInvoker(compiledDelegate!);
 
         int aCount = tA.Rows.Count;
         int bCount = tB.Rows.Count;
@@ -531,112 +723,136 @@ public class CrossDataSetSelections
         var selArr = new bool[aCount];
         var resArr = new bool[bCount];
 
-        var selectedAIndices = Enumerable.Range(0, aCount)
-            .Where(i => tA.Rows[i].TryGetValue("isSelected", out var s) && s is bool sb && sb)
-            .ToArray();
-
-        var selectedBIndices = Enumerable.Range(0, bCount)
-            .Where(j => tB.Rows[j].TryGetValue("isSelected", out var s) && s is bool sb && sb)
-            .ToArray();
-
-        var aSelectedInstances = selectedAIndices.Select(i => CreateTypedInstance(typeA, tA, i)).ToArray();
-        var bSelectedInstances = selectedBIndices.Select(j => CreateTypedInstance(typeB, tB, j)).ToArray();
-
-        var bInstances = new object[bCount];
-        for (int j = 0; j < bCount; j++)
-            bInstances[j] = CreateTypedInstance(typeB, tB, j);
-
-        Log($"Bidirectional: selectedA={selectedAIndices.Length}, selectedB={selectedBIndices.Length}");
-
-        var localLogs = new ThreadLocal<List<string>>(() => new List<string>(), true);
-        var po = new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount) };
-
-        var aAllInstances = Enumerable.Range(0, aCount)
-            .Select(i => CreateTypedInstance(typeA, tA, i))
-            .ToArray();
-
-        // run across all A
-        if (aCount > 0 && bSelectedInstances.Length > 0)
+        if (_usePrecompute && cacheEntry != null)
         {
-            Parallel.ForEach(Partitioner.Create(0, aCount), po, range =>
-            {
-                var buf = localLogs.Value;
-                for (int k = range.Item1; k < range.Item2; k++)
-                {
-                    int ia = k;
-                    var xInst = aAllInstances[k];
-                    bool matched = false;
+            // Build selectedB boolean map
+            var selectedB = new bool[bCount];
+            for (int j = 0; j < bCount; j++)
+                if (tB.Rows[j].TryGetValue("isSelected", out var s) && s is bool sb && sb) selectedB[j] = true;
 
-                    for (int jbIdx = 0; jbIdx < bSelectedInstances.Length; jbIdx++)
+            // For each A, check its AToB list
+            RunIndexedLoop(aCount, (ia, buf) =>
+            {
+                var list = cacheEntry.AToB![ia];
+                bool matched = false;
+                for (int k = 0; k < list.Count; k++)
+                {
+                    if (selectedB[list[k]]) { matched = true; break; }
+                }
+                selArr[ia] = matched;
+            });
+
+            // For each B, check its BToA list against selectedA map
+            var selectedA = new bool[aCount];
+            for (int i = 0; i < aCount; i++)
+                if (tA.Rows[i].TryGetValue("isSelected", out var s) && s is bool sb && sb) selectedA[i] = true;
+
+            RunIndexedLoop(bCount, (jb, buf) =>
+            {
+                var list = cacheEntry.BToA[jb];
+                bool has = false;
+                for (int k = 0; k < list.Count; k++)
+                {
+                    if (selectedA[list[k]]) { has = true; break; }
+                }
+                resArr[jb] = has;
+            });
+
+            result = resArr.ToList();
+            selectedFrom = selArr.ToList();
+            Log($"TryEvaluateMatchesBidirectional: finished using precompute resultCount={result.Count} selectedFromCount={selectedFrom.Count}");
+            return true;
+        }
+        else
+        {
+            Log($"TryEvaluateMatchesBidirectional: compiling predicate '{predicateString}'");
+            var lambda = CompilePredicate(typeA, typeB, predicateString, out string? compileErr);
+            if (lambda == null) { Log($"Predicate compile failed: {compileErr}"); return false; }
+
+            Delegate? compiledDelegate = TryCompileLambda(lambda, typeA, typeB, out string? compileError);
+            if (compiledDelegate is null) { Log($"Predicate compile failed: {compileError}"); return false; }
+
+            var evalFunc = CreateInvoker(compiledDelegate!);
+
+            var selectedAIndices = Enumerable.Range(0, aCount)
+                .Where(i => tA.Rows[i].TryGetValue("isSelected", out var s) && s is bool sb && sb)
+                .ToArray();
+
+            var selectedBIndices = Enumerable.Range(0, bCount)
+                .Where(j => tB.Rows[j].TryGetValue("isSelected", out var s) && s is bool sb && sb)
+                .ToArray();
+
+            var aSelectedInstances = selectedAIndices.Select(i => CreateTypedInstance(typeA, tA, i)).ToArray();
+            var bSelectedInstances = selectedBIndices.Select(j => CreateTypedInstance(typeB, tB, j)).ToArray();
+
+            var bInstances = new object[bCount];
+            for (int j = 0; j < bCount; j++)
+                bInstances[j] = CreateTypedInstance(typeB, tB, j);
+
+            Log($"Bidirectional: selectedA={selectedAIndices.Length}, selectedB={selectedBIndices.Length}");
+
+            var logsA = RunIndexedLoop(aCount, (ia, buf) =>
+            {
+                var xInst = CreateTypedInstance(typeA, tA, ia);
+                bool matched = false;
+
+                for (int jbIdx = 0; jbIdx < bSelectedInstances.Length; jbIdx++)
+                {
+                    int jb = selectedBIndices[jbIdx];
+                    var yInst = bSelectedInstances[jbIdx];
+                    try
                     {
-                        int jb = selectedBIndices[jbIdx];
-                        var yInst = bSelectedInstances[jbIdx];
-                        try
+                        if (evalFunc(xInst, yInst))
                         {
-                            if (evalFunc(xInst, yInst))
-                            {
-                                matched = true;
-                                break;
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            buf.Add($"Bidirectional eval exception A#{ia} B#{jb}: {ex.GetType().Name} {ex.Message}");
+                            matched = true;
+                            break;
                         }
                     }
-
-                    selArr[ia] = matched;
-                }
-            });
-        }
-
-        // For each B -> resArr
-        if (bCount > 0 && aSelectedInstances.Length > 0)
-        {
-            Parallel.ForEach(Partitioner.Create(0, bCount), po, range =>
-            {
-                var buf = localLogs.Value;
-                for (int jb = range.Item1; jb < range.Item2; jb++)
-                {
-                    var yInst = bInstances[jb];
-                    bool hasMatch = false;
-
-                    for (int k = 0; k < aSelectedInstances.Length; k++)
+                    catch (Exception ex)
                     {
-                        int ia = selectedAIndices[k];
-                        var xInst = aSelectedInstances[k];
-                        try
+                        buf.Add($"Bidirectional eval exception A#{ia} B#{jb}: {ex.GetType().Name} {ex.Message}");
+                    }
+                }
+
+                selArr[ia] = matched;
+            });
+
+            var logsB = RunIndexedLoop(bCount, (jb, buf) =>
+            {
+                var yInst = bInstances[jb];
+                bool hasMatch = false;
+
+                for (int k = 0; k < aSelectedInstances.Length; k++)
+                {
+                    int ia = selectedAIndices[k];
+                    var xInst = aSelectedInstances[k];
+                    try
+                    {
+                        if (evalFunc(xInst, yInst))
                         {
-                            if (evalFunc(xInst, yInst))
-                            {
-                                hasMatch = true;
-                                break;
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            buf.Add($"Bidirectional eval exception A#{ia} B#{jb}: {ex.GetType().Name} {ex.Message}");
+                            hasMatch = true;
+                            break;
                         }
                     }
-
-                    resArr[jb] = hasMatch;
+                    catch (Exception ex)
+                    {
+                        buf.Add($"Bidirectional eval exception A#{ia} B#{jb}: {ex.GetType().Name} {ex.Message}");
+                    }
                 }
+
+                resArr[jb] = hasMatch;
             });
+
+            foreach (var msg in logsA) Log(msg);
+            foreach (var msg in logsB) Log(msg);
+
+            result = resArr.ToList();
+            selectedFrom = selArr.ToList();
+            Log($"TryEvaluateMatchesBidirectional: finished resultCount={result.Count} selectedFromCount={selectedFrom.Count}");
+            return true;
         }
-
-        foreach (var l in localLogs.Values)
-            foreach (var msg in l)
-                Log(msg);
-        localLogs.Dispose();
-
-        result = resArr.ToList();
-        selectedFrom = selArr.ToList();
-        Log($"TryEvaluateMatchesBidirectional: finished resultCount={result.Count} selectedFromCount={selectedFrom.Count}");
-        return true;
     }
 
-    // Compile the predicate string into a DynamicExpresso Lambda expecting parameters X (typeA) and Y (typeB).
-    // We expose Math and Convert and set default number type to double.
     private Lambda? CompilePredicate(Type typeA, Type typeB, string predicate, out string? error)
     {
         error = null;
@@ -647,11 +863,9 @@ public class CrossDataSetSelections
                 .Reference(typeof(Convert))
                 .SetDefaultNumberType(DefaultNumberType.Double);
 
-            // register numeric helpers
             interpreter.SetFunction("Sqrt", (Func<double, double>)Math.Sqrt);
             interpreter.SetFunction("Pow", (Func<double, double, double>)Math.Pow);
 
-            // parse predicate expecting parameters named X and Y
             var lambda = interpreter.Parse(predicate, new Parameter("X", typeA), new Parameter("Y", typeB));
             return lambda;
         }
@@ -663,8 +877,6 @@ public class CrossDataSetSelections
         }
     }
 
-    // Create an instance of the runtime-generated type and populate its properties from the row dictionary.
-    // Conversion: target double -> Convert.ToDouble if possible; string -> ToString(); bool -> cast if bool else false.
     private object CreateTypedInstance(Type generatedType, InMemoryTable table, int rowIndex)
     {
         var inst = Activator.CreateInstance(generatedType)!;
@@ -691,7 +903,6 @@ public class CrossDataSetSelections
 
             if (val == null)
             {
-                // leave defaults for value types, null for reference types
                 prop.SetValue(inst, prop.PropertyType.IsValueType ? Activator.CreateInstance(prop.PropertyType) : null);
                 continue;
             }
@@ -725,7 +936,6 @@ public class CrossDataSetSelections
             }
             catch (Exception ex)
             {
-                // log conversion failures for each property/row
                 Log($"CreateTypedInstance: conversion failed table='{table.Name}' row={rowIndex} col='{original}' -> {ex.GetType().Name}: {ex.Message}");
             }
         }
@@ -733,13 +943,11 @@ public class CrossDataSetSelections
         return inst;
     }
 
-    // Print the full table contents and the inferred CLR types for each column (human readable).
     public string PrintTable(string tableName, int maxRows = 50)
     {
         if (!_tables.TryGetValue(tableName, out var table))
             return $"Table '{tableName}' not found.";
 
-        // ensure we computed types
         try { GetOrCreateTypeForTable(table); } catch { /* ignore */ }
 
         _columnTypeMap.TryGetValue(table.Name, out var colTypes);
@@ -754,7 +962,6 @@ public class CrossDataSetSelections
             sb.AppendLine($"  - {c} : {(t?.Name ?? "unknown")}");
         }
 
-        // synthetic columns
         if (colTypes.ContainsKey("originalIndexPosition")) sb.AppendLine("  - originalIndexPosition : int");
         if (colTypes.ContainsKey("isSelected")) sb.AppendLine("  - isSelected : bool");
 
@@ -780,5 +987,19 @@ public class CrossDataSetSelections
         var dump = sb.ToString();
         Log($"PrintTable: produced {Math.Min(table.Rows.Count, maxRows)} rows for '{tableName}'");
         return dump;
+    }
+}
+
+// Simple in-memory table type (kept here for completeness)
+public class InMemoryTable
+{
+    public string Name { get; }
+    public string[] Columns { get; }
+    public List<Dictionary<string, object?>> Rows { get; } = new();
+
+    public InMemoryTable(string name, string[] columns)
+    {
+        Name = name;
+        Columns = columns;
     }
 }
