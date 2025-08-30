@@ -251,6 +251,9 @@ public class CrossDataSetLinks {
         msg.dataSet = this._dataSets.ToArray();
         msg.links = this.links;
         msg.linksOperator = this.linkOperator;
-        await _wsCoordinator.BroadcastMessage(msg, 0, false);
+        await _wsCoordinator.BroadcastMessage(msg, clientId, false);
+        
+        msg.type = "linkUpdate";
+        await _wsCoordinator.SendMessageToClient(msg, clientId);
     }
 }

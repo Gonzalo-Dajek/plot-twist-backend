@@ -459,6 +459,7 @@ public class CrossDataSetSelections
     }
 
     // Precompute matches B->A and optionally A->B (tryBidirectional)
+
     private MatchCacheValue? PrecomputeMatches(Type typeA, Type typeB, InMemoryTable tA, InMemoryTable tB, string predicate, bool tryBidirectional, out string? error)
     {
         error = null;
@@ -485,12 +486,22 @@ public class CrossDataSetSelections
 
             var cacheVal = new MatchCacheValue(aCount, bCount, computeAToB: tryBidirectional);
 
-            // create typed instances once
+            // create typed instances once (now parallel when enabled)
             var aInstances = new object[aCount];
-            for (int i = 0; i < aCount; i++) aInstances[i] = CreateTypedInstance(typeA, tA, i);
             var bInstances = new object[bCount];
-            for (int j = 0; j < bCount; j++) bInstances[j] = CreateTypedInstance(typeB, tB, j);
 
+            if (_useParallelEvaluation)
+            {
+                Parallel.For(0, aCount, i => aInstances[i] = CreateTypedInstance(typeA, tA, i));
+                Parallel.For(0, bCount, j => bInstances[j] = CreateTypedInstance(typeB, tB, j));
+            }
+            else
+            {
+                for (int i = 0; i < aCount; i++) aInstances[i] = CreateTypedInstance(typeA, tA, i);
+                for (int j = 0; j < bCount; j++) bInstances[j] = CreateTypedInstance(typeB, tB, j);
+            }
+
+            // compute B->A lists. RunIndexedLoop already respects _useParallelEvaluation.
             var logs = RunIndexedLoop(bCount, (jb, buf) =>
             {
                 var yInst = bInstances[jb];
@@ -512,14 +523,35 @@ public class CrossDataSetSelections
 
             foreach (var msg in logs) Log(msg);
 
+            // If we need AToB populate it — parallelized and thread-safe using per-index locks
             if (tryBidirectional)
             {
-                for (int jb = 0; jb < bCount; jb++)
+                // ensure AToB exists (it was created in ctor when computeAToB==true)
+                var locks = new object[aCount];
+                for (int i = 0; i < aCount; i++) locks[i] = new object();
+
+                if (_useParallelEvaluation)
                 {
-                    var list = cacheVal.BToA[jb];
-                    foreach (var ia in list)
+                    Parallel.For(0, bCount, jb =>
                     {
-                        cacheVal.AToB![ia].Add(jb);
+                        var list = cacheVal.BToA[jb];
+                        foreach (var ia in list)
+                        {
+                            // per-ia lock to avoid concurrent List.Add on same list
+                            lock (locks[ia])
+                            {
+                                cacheVal.AToB![ia].Add(jb);
+                            }
+                        }
+                    });
+                }
+                else
+                {
+                    for (int jb = 0; jb < bCount; jb++)
+                    {
+                        var list = cacheVal.BToA[jb];
+                        foreach (var ia in list)
+                            cacheVal.AToB![ia].Add(jb);
                     }
                 }
             }
@@ -695,22 +727,45 @@ public class CrossDataSetSelections
             }
             else
             {
-                // If cache exists but lacks AToB, derive it from BToA under lock and update cache
+                // If cache exists but lacks AToB, derive it from BToA (parallel if enabled)
                 if (!cacheEntry.HasAToB)
                 {
+                    // allocate under global lock once
                     lock (_lock)
                     {
                         if (!cacheEntry.HasAToB)
                         {
                             cacheEntry.AToB = new List<int>[cacheEntry.ACount];
                             for (int i = 0; i < cacheEntry.ACount; i++) cacheEntry.AToB[i] = new List<int>();
+                        }
+                    }
 
-                            for (int jb = 0; jb < cacheEntry.BCount; jb++)
+                    var aCountLocal = cacheEntry.ACount;
+                    var bCountLocal = cacheEntry.BCount;
+                    var locks = new object[aCountLocal];
+                    for (int i = 0; i < aCountLocal; i++) locks[i] = new object();
+
+                    if (_useParallelEvaluation)
+                    {
+                        Parallel.For(0, bCountLocal, jb =>
+                        {
+                            var list = cacheEntry.BToA[jb];
+                            foreach (var ia in list)
                             {
-                                var list = cacheEntry.BToA[jb];
-                                foreach (var ia in list)
-                                    cacheEntry.AToB[ia].Add(jb);
+                                lock (locks[ia])
+                                {
+                                    cacheEntry.AToB![ia].Add(jb);
+                                }
                             }
+                        });
+                    }
+                    else
+                    {
+                        for (int jb = 0; jb < bCountLocal; jb++)
+                        {
+                            var list = cacheEntry.BToA[jb];
+                            foreach (var ia in list)
+                                cacheEntry.AToB![ia].Add(jb);
                         }
                     }
                 }
@@ -786,8 +841,10 @@ public class CrossDataSetSelections
             var bSelectedInstances = selectedBIndices.Select(j => CreateTypedInstance(typeB, tB, j)).ToArray();
 
             var bInstances = new object[bCount];
-            for (int j = 0; j < bCount; j++)
-                bInstances[j] = CreateTypedInstance(typeB, tB, j);
+            if (_useParallelEvaluation)
+                Parallel.For(0, bCount, j => bInstances[j] = CreateTypedInstance(typeB, tB, j));
+            else
+                for (int j = 0; j < bCount; j++) bInstances[j] = CreateTypedInstance(typeB, tB, j);
 
             Log($"Bidirectional: selectedA={selectedAIndices.Length}, selectedB={selectedBIndices.Length}");
 
