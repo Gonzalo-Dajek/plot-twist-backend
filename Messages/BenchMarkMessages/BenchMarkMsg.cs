@@ -6,7 +6,7 @@ public struct BenchMarkMsg {
     public double timeToUpdatePlots { get; set;  }
     public int brushId { get; set; }
     public bool isActiveBrush { get; set; }
-    public ClientSelection[]? range { get; set; }
+    public ClientSelection[]? clientsSelections { get; set; }
     public int clientId { get; set; }
     public BenchmarkConfig? clientInfo { get; set; }
 }

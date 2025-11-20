@@ -84,7 +84,7 @@ public static class PlotTwistBackEnd
                 }
                 catch (WebSocketException)
                 {
-                    // Client disconnected unexpectedly — just break the loop
+                    // Client disconnected unexpectedly
                     break;
                 }
 

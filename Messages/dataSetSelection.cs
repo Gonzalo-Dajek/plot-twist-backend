@@ -3,6 +3,7 @@ namespace plot_twist_back_end.Messages;
 public struct ClientSelection
 {
     public dataSetSelection[]? selectionPerDataSet { get; set; }
+    public long? debugTimeSent { get; set; }
 }
 
 public struct dataSetSelection

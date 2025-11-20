@@ -34,11 +34,11 @@ public class CrossDataSetSelections
     // existing parallelism toggle
     private bool _useParallelEvaluation = true;
 
-    // NEW: independent precompute toggle (controls whether precompute runs at all)
+    // independent precompute toggle (controls whether precompute runs at all)
     private bool _usePrecompute = true;
 
     // --- Match precompute cache (LRU capped) ---
-    private readonly int _matchCacheCapacity = 20;
+    private readonly int _matchCacheCapacity = 8;
     private readonly LinkedList<(string Key, MatchCacheValue Value)> _matchCacheLru = new();
     private readonly Dictionary<string, LinkedListNode<(string Key, MatchCacheValue Value)>> _matchCacheMap
         = new(StringComparer.Ordinal);
@@ -308,8 +308,9 @@ public class CrossDataSetSelections
             try
             {
                 var _ = GetOrCreateTypeForTable(table);
-                Log(PrintTable(dataset.name, 8));
-                Console.WriteLine(PrintTable(dataset.name, 3));
+                // Log(PrintTable(dataset.name, 8));
+                // TODO: re ADD
+                // Console.WriteLine(PrintTable(dataset.name, 0));
             }
             catch (Exception ex)
             {
@@ -427,36 +428,7 @@ public class CrossDataSetSelections
             return null;
         }
     }
-
-    private List<string> RunIndexedLoop(int count, Action<int, List<string>> body)
-    {
-        if (count <= 0) return new List<string>();
-
-        if (_useParallelEvaluation)
-        {
-            var localLogs = new ThreadLocal<List<string>>(() => new List<string>(), true);
-            var po = new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount) };
-
-            Parallel.ForEach(Partitioner.Create(0, count), po, range =>
-            {
-                var buf = localLogs.Value;
-                for (int i = range.Item1; i < range.Item2; i++)
-                    body(i, buf);
-            });
-
-            var merged = new List<string>();
-            foreach (var l in localLogs.Values) merged.AddRange(l);
-            localLogs.Dispose();
-            return merged;
-        }
-        else
-        {
-            var seqLogs = new List<string>();
-            for (int i = 0; i < count; i++)
-                body(i, seqLogs);
-            return seqLogs;
-        }
-    }
+    
 
     // Precompute matches B->A and optionally A->B (tryBidirectional)
 
@@ -565,57 +537,217 @@ public class CrossDataSetSelections
         }
     }
 
+    private List<string> RunIndexedLoop(int count, Action<int, List<string>> body)
+    {
+        if (count <= 0) return new List<string>();
+
+        if (_useParallelEvaluation)
+        {
+            var po = new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1,2) };//Environment.ProcessorCount) };
+            Parallel.For(0, count, po, i =>
+            {
+                // per-iteration buffer — used only if the body wants to append messages;
+                // we do not merge/emit them, avoiding any shared-locks or blocking.
+                var buf = new List<string>(0);
+                try
+                {
+                    body(i, buf);
+                }
+                catch
+                {
+                    // swallow: logging removed
+                }
+            });
+
+            // logging removed — return empty list to preserve signature
+            return new List<string>(0);
+        }
+        else
+        {
+            for (int i = 0; i < count; i++)
+            {
+                var buf = new List<string>(0);
+                try
+                {
+                    body(i, buf);
+                }
+                catch
+                {
+                    // swallow: logging removed
+                }
+            }
+
+            return new List<string>(0);
+        }
+    }
+
+    // TODO: EVIL
+//     
+//     public bool TryEvaluateMatches(string tableA, string tableB, string predicateString, out List<bool> result)
+// {
+//     result = new List<bool>();
+//
+//     if (!_tables.TryGetValue(tableA, out var tA) || !_tables.TryGetValue(tableB, out var tB))
+//         return false;
+//
+//     var typeA = GetOrCreateTypeForTable(tA);
+//     var typeB = GetOrCreateTypeForTable(tB);
+//
+//     if (!_propMaps.TryGetValue(typeA.FullName!, out var mapA) ||
+//         !_propMaps.TryGetValue(typeB.FullName!, out var mapB))
+//         return false;
+//
+//     MatchCacheValue? cacheEntry = null;
+//
+//     // Always recompute precomputation regardless of existing cache
+//     if (_usePrecompute)
+//     {
+//         long before = GC.GetTotalMemory(true);
+//
+//         var pre = PrecomputeMatches(typeA, typeB, tA, tB, predicateString, tryBidirectional: false, out string? preErr);
+//         
+//         long after = GC.GetTotalMemory(true);
+//         Console.WriteLine($"Cached value size ≈ {after - before:N0} bytes");
+//
+//         if (pre == null)
+//             return false;
+//
+//         // Optionally still store it if desired for inspection
+//         // var key = MakeMatchCacheKey(tableA, tableB, predicateString);
+//         // AddCachedMatches(key, pre);
+//
+//         cacheEntry = pre;
+//     }
+//
+//     var selectedA = new bool[tA.Rows.Count];
+//     for (int i = 0; i < tA.Rows.Count; i++)
+//     {
+//         if (tA.Rows[i].TryGetValue("isSelected", out var s) && s is bool sb && sb)
+//             selectedA[i] = true;
+//     }
+//
+//     int bCount = tB.Rows.Count;
+//     var output = new bool[bCount];
+//
+//     if (_usePrecompute && cacheEntry != null)
+//     {
+//         // Use recomputed B->A lists
+//         RunIndexedLoop(bCount, (ib, buf) =>
+//         {
+//             var matches = cacheEntry.BToA[ib];
+//             bool has = false;
+//             for (int k = 0; k < matches.Count; k++)
+//             {
+//                 if (selectedA[matches[k]]) { has = true; break; }
+//             }
+//             output[ib] = has;
+//         });
+//
+//         result = output.ToList();
+//         return true;
+//     }
+//     else
+//     {
+//         var lambda = CompilePredicate(typeA, typeB, predicateString, out string? compileErr);
+//         if (lambda == null) return false;
+//
+//         Delegate? compiledDelegate = TryCompileLambda(lambda, typeA, typeB, out string? compileError);
+//         if (compiledDelegate is null) return false;
+//
+//         var evalFunc = CreateInvoker(compiledDelegate);
+//
+//         var selectedAIndices = Enumerable.Range(0, tA.Rows.Count)
+//             .Where(i => tA.Rows[i].TryGetValue("isSelected", out var s) && s is bool sb && sb)
+//             .ToArray();
+//
+//         var aSelectedInstances = selectedAIndices
+//             .Select(i => CreateTypedInstance(typeA, tA, i))
+//             .ToArray();
+//
+//         var bInstances = new object[bCount];
+//         for (int i = 0; i < bCount; i++)
+//             bInstances[i] = CreateTypedInstance(typeB, tB, i);
+//
+//         RunIndexedLoop(bCount, (ib, buf) =>
+//         {
+//             var yInst = bInstances[ib];
+//             bool hasMatch = false;
+//
+//             for (int k = 0; k < aSelectedInstances.Length; k++)
+//             {
+//                 var xInst = aSelectedInstances[k];
+//
+//                 try
+//                 {
+//                     if (evalFunc(xInst, yInst))
+//                     {
+//                         hasMatch = true;
+//                         break;
+//                     }
+//                 }
+//                 catch { }
+//             }
+//
+//             output[ib] = hasMatch;
+//         });
+//
+//         result = output.ToList();
+//         return true;
+//     }
+// }
+
+    
     public bool TryEvaluateMatches(string tableA, string tableB, string predicateString, out List<bool> result)
     {
         result = new List<bool>();
         if (!_tables.TryGetValue(tableA, out var tA) || !_tables.TryGetValue(tableB, out var tB))
         {
-            Log($"TryEvaluateMatches: missing table(s) '{tableA}' or '{tableB}'");
             return false;
         }
-
+    
         var typeA = GetOrCreateTypeForTable(tA);
         var typeB = GetOrCreateTypeForTable(tB);
-
+    
         if (!_propMaps.TryGetValue(typeA.FullName!, out var mapA) || !_propMaps.TryGetValue(typeB.FullName!, out var mapB))
         {
-            Log("TryEvaluateMatches: missing prop maps for generated types");
             return false;
         }
-
+    
         var key = MakeMatchCacheKey(tableA, tableB, predicateString);
-
+    
         MatchCacheValue? cacheEntry = null;
-        // Precompute happens only if both the per-call flag and the global flag are true
         if (_usePrecompute)
         {
+    
+            
             if (!TryGetCachedMatches(key, out cacheEntry))
             {
-                Log($"TryEvaluateMatches: precomputing matches for key {key}");
                 var pre = PrecomputeMatches(typeA, typeB, tA, tB, predicateString, tryBidirectional: false, out string? preErr);
+                
                 if (pre == null)
                 {
-                    Log($"Precompute failed: {preErr}");
                     return false;
                 }
                 AddCachedMatches(key, pre);
+                
+    
+                
                 cacheEntry = pre;
             }
         }
-
-        // selected A boolean map (fast lookup)
+    
         var selectedA = new bool[tA.Rows.Count];
         for (int i = 0; i < tA.Rows.Count; i++)
         {
             if (tA.Rows[i].TryGetValue("isSelected", out var s) && s is bool sb && sb) selectedA[i] = true;
         }
-
+    
         int bCount = tB.Rows.Count;
         var output = new bool[bCount];
-
+    
         if (_usePrecompute && cacheEntry != null)
         {
-            // use cached B->A lists; loop B (parallel or not via helper)
+            // use cached B->A lists
             RunIndexedLoop(bCount, (ib, buf) =>
             {
                 var matches = cacheEntry.BToA[ib];
@@ -626,44 +758,41 @@ public class CrossDataSetSelections
                 }
                 output[ib] = has;
             });
-
+    
             result = output.ToList();
-            Log($"TryEvaluateMatches: finished using precompute, result count={result.Count}");
             return true;
         }
         else
         {
-            Log($"TryEvaluateMatches: compiling predicate '{predicateString}' for A='{tableA}' B='{tableB}'");
             var lambda = CompilePredicate(typeA, typeB, predicateString, out string? compileErr);
-            if (lambda == null) { Log($"Predicate compile failed: {compileErr}"); return false; }
-
+            if (lambda == null) { return false; }
+    
             Delegate? compiledDelegate = TryCompileLambda(lambda, typeA, typeB, out string? compileError);
-            if (compiledDelegate is null) { Log($"Predicate compile failed: {compileError}"); return false; }
-
+            if (compiledDelegate is null) { return false; }
+    
             var evalFunc = CreateInvoker(compiledDelegate!);
-
+    
             var selectedAIndices = Enumerable.Range(0, tA.Rows.Count)
                 .Where(i => tA.Rows[i].TryGetValue("isSelected", out var s) && s is bool sb && sb)
                 .ToArray();
-
+    
             var aSelectedInstances = selectedAIndices
                 .Select(i => CreateTypedInstance(typeA, tA, i))
                 .ToArray();
-
+    
             var bInstances = new object[bCount];
             for (int i = 0; i < bCount; i++)
                 bInstances[i] = CreateTypedInstance(typeB, tB, i);
-
-            var logs = RunIndexedLoop(bCount, (ib, buf) =>
+    
+            RunIndexedLoop(bCount, (ib, buf) =>
             {
                 var yInst = bInstances[ib];
                 bool hasMatch = false;
-
+    
                 for (int k = 0; k < aSelectedInstances.Length; k++)
                 {
                     var xInst = aSelectedInstances[k];
-                    int ia = selectedAIndices[k];
-
+    
                     try
                     {
                         if (evalFunc(xInst, yInst))
@@ -672,19 +801,16 @@ public class CrossDataSetSelections
                             break;
                         }
                     }
-                    catch (Exception ex)
+                    catch
                     {
-                        buf.Add($"Evaluation exception for A#{ia} B#{ib}: {ex.GetType().Name} {ex.Message}");
+    
                     }
                 }
-
+    
                 output[ib] = hasMatch;
             });
-
-            foreach (var msg in logs) Log(msg);
-
+    
             result = output.ToList();
-            Log($"TryEvaluateMatches: finished, result count={result.Count}");
             return true;
         }
     }
@@ -701,7 +827,6 @@ public class CrossDataSetSelections
 
         if (!_tables.TryGetValue(tableA, out var tA) || !_tables.TryGetValue(tableB, out var tB))
         {
-            Log($"TryEvaluateMatchesBidirectional: missing table(s) '{tableA}' or '{tableB}'");
             return false;
         }
 
@@ -715,11 +840,9 @@ public class CrossDataSetSelections
         {
             if (!TryGetCachedMatches(key, out cacheEntry))
             {
-                Log($"TryEvaluateMatchesBidirectional: precomputing matches for key {key}");
                 var pre = PrecomputeMatches(typeA, typeB, tA, tB, predicateString, tryBidirectional: true, out string? preErr);
                 if (pre == null)
                 {
-                    Log($"Precompute failed: {preErr}");
                     return false;
                 }
                 AddCachedMatches(key, pre);
@@ -727,10 +850,8 @@ public class CrossDataSetSelections
             }
             else
             {
-                // If cache exists but lacks AToB, derive it from BToA (parallel if enabled)
                 if (!cacheEntry.HasAToB)
                 {
-                    // allocate under global lock once
                     lock (_lock)
                     {
                         if (!cacheEntry.HasAToB)
@@ -780,12 +901,10 @@ public class CrossDataSetSelections
 
         if (_usePrecompute && cacheEntry != null)
         {
-            // Build selectedB boolean map
             var selectedB = new bool[bCount];
             for (int j = 0; j < bCount; j++)
                 if (tB.Rows[j].TryGetValue("isSelected", out var s) && s is bool sb && sb) selectedB[j] = true;
 
-            // For each A, check its AToB list
             RunIndexedLoop(aCount, (ia, buf) =>
             {
                 var list = cacheEntry.AToB![ia];
@@ -797,7 +916,6 @@ public class CrossDataSetSelections
                 selArr[ia] = matched;
             });
 
-            // For each B, check its BToA list against selectedA map
             var selectedA = new bool[aCount];
             for (int i = 0; i < aCount; i++)
                 if (tA.Rows[i].TryGetValue("isSelected", out var s) && s is bool sb && sb) selectedA[i] = true;
@@ -815,17 +933,15 @@ public class CrossDataSetSelections
 
             result = resArr.ToList();
             selectedFrom = selArr.ToList();
-            Log($"TryEvaluateMatchesBidirectional: finished using precompute resultCount={result.Count} selectedFromCount={selectedFrom.Count}");
             return true;
         }
         else
         {
-            Log($"TryEvaluateMatchesBidirectional: compiling predicate '{predicateString}'");
             var lambda = CompilePredicate(typeA, typeB, predicateString, out string? compileErr);
-            if (lambda == null) { Log($"Predicate compile failed: {compileErr}"); return false; }
+            if (lambda == null) { return false; }
 
             Delegate? compiledDelegate = TryCompileLambda(lambda, typeA, typeB, out string? compileError);
-            if (compiledDelegate is null) { Log($"Predicate compile failed: {compileError}"); return false; }
+            if (compiledDelegate is null) { return false; }
 
             var evalFunc = CreateInvoker(compiledDelegate!);
 
@@ -846,16 +962,14 @@ public class CrossDataSetSelections
             else
                 for (int j = 0; j < bCount; j++) bInstances[j] = CreateTypedInstance(typeB, tB, j);
 
-            Log($"Bidirectional: selectedA={selectedAIndices.Length}, selectedB={selectedBIndices.Length}");
-
-            var logsA = RunIndexedLoop(aCount, (ia, buf) =>
+            RunIndexedLoop(aCount, (ia, buf) =>
             {
                 var xInst = CreateTypedInstance(typeA, tA, ia);
                 bool matched = false;
 
                 for (int jbIdx = 0; jbIdx < bSelectedInstances.Length; jbIdx++)
                 {
-                    int jb = selectedBIndices[jbIdx];
+                    // int jb = selectedBIndices[jbIdx];
                     var yInst = bSelectedInstances[jbIdx];
                     try
                     {
@@ -865,23 +979,23 @@ public class CrossDataSetSelections
                             break;
                         }
                     }
-                    catch (Exception ex)
+                    catch
                     {
-                        buf.Add($"Bidirectional eval exception A#{ia} B#{jb}: {ex.GetType().Name} {ex.Message}");
+                        // logging removed — swallow
                     }
                 }
 
                 selArr[ia] = matched;
             });
 
-            var logsB = RunIndexedLoop(bCount, (jb, buf) =>
+            RunIndexedLoop(bCount, (jb, buf) =>
             {
                 var yInst = bInstances[jb];
                 bool hasMatch = false;
 
                 for (int k = 0; k < aSelectedInstances.Length; k++)
                 {
-                    int ia = selectedAIndices[k];
+                    // int ia = selectedAIndices[k];
                     var xInst = aSelectedInstances[k];
                     try
                     {
@@ -891,24 +1005,21 @@ public class CrossDataSetSelections
                             break;
                         }
                     }
-                    catch (Exception ex)
+                    catch
                     {
-                        buf.Add($"Bidirectional eval exception A#{ia} B#{jb}: {ex.GetType().Name} {ex.Message}");
+                        // logging removed — swallow
                     }
                 }
 
                 resArr[jb] = hasMatch;
             });
 
-            foreach (var msg in logsA) Log(msg);
-            foreach (var msg in logsB) Log(msg);
-
             result = resArr.ToList();
             selectedFrom = selArr.ToList();
-            Log($"TryEvaluateMatchesBidirectional: finished resultCount={result.Count} selectedFromCount={selectedFrom.Count}");
             return true;
         }
     }
+
 
     private Lambda? CompilePredicate(Type typeA, Type typeB, string predicate, out string? error)
     {

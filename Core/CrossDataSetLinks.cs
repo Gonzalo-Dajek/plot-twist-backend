@@ -157,6 +157,7 @@ public class CrossDataSetLinks {
         this._crossDataSetSelections = entrySelectedByPerDataSet;
         
         // update all cross selections by link
+        var stopwatch = Stopwatch.StartNew();
         for (int i = 0; i < links.Length; i++)
         {
             ref Link link = ref links[i];
@@ -203,6 +204,10 @@ public class CrossDataSetLinks {
                 }
             }
         }
+        stopwatch.Stop();
+                    
+        var timeToProcess = stopwatch.Elapsed.TotalMilliseconds;
+        // Console.WriteLine($"brush took: {timeToProcess}");
         
         // if a list remains empty then fill it with all false(s)
         for (int i = 0; i < _dataSets.Count; i++)
